@@ -1,0 +1,17 @@
+// Optional Gradle init script for networks where Maven Central / Google / the
+// Gradle distribution CDN are slow or blocked. Use explicitly:
+//
+//   GRADLE_INIT=scripts/gradle/mirrors.init.gradle scripts/package_android.sh
+//
+// It only swaps the *repository* endpoints for well-known mirrors; it does not
+// change plugin or dependency versions.
+settingsEvaluated { settings ->
+    settings.pluginManagement.repositories.clear()
+    settings.pluginManagement.repositories.maven { url = uri('https://maven.aliyun.com/repository/google') }
+    settings.pluginManagement.repositories.maven { url = uri('https://maven.aliyun.com/repository/gradle-plugin') }
+    settings.pluginManagement.repositories.maven { url = uri('https://repo.maven.apache.org/maven2') }
+
+    settings.dependencyResolutionManagement.repositories.clear()
+    settings.dependencyResolutionManagement.repositories.maven { url = uri('https://maven.aliyun.com/repository/google') }
+    settings.dependencyResolutionManagement.repositories.maven { url = uri('https://repo.maven.apache.org/maven2') }
+}

@@ -3,9 +3,9 @@ import java.io.FileInputStream
 import java.util.Properties
 
 // Single source of truth for the app version. Keep these in sync with the git
-// release tag (e.g. tag v0.1.9-preview -> versionName "0.1.9-preview").
-val appVersionCode = 9
-val appVersionName = "0.1.9-preview"
+// release tag (e.g. tag v0.1.10-preview -> versionName "0.1.10-preview").
+val appVersionCode = 10
+val appVersionName = "0.1.10-preview"
 
 plugins {
     id("com.android.application")

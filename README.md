@@ -43,7 +43,7 @@ Android 仍处于预览阶段；本 fork 已加入实验性微信一对一采集
 | --- | --- | --- |
 | macOS | [`goutoujunshi-jev-chat-mac.zip`](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-mac.zip) | 源码 ZIP；解压后运行 `安装依赖.command`，再运行 `离线演示.command` 或 `启动.command`。需要 Python 3.12 和 uv，尚无签名 `.app`。 |
 | Windows | [`goutoujunshi-jev-chat-windows-preview.zip`](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-windows-preview.zip) | 可执行目录 ZIP；自动构建通过 |
-| Android | [`goutoujunshi-jev-chat-0.1.9-preview-debug.apk`](https://github.com/svcgv/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-0.1.9-preview-debug.apk) | Android 11+ 调试预览包，APK 文件名带版本号。**上游 APK 不含本 fork 的新采集与绑定功能，请本地构建。** |
+| Android | [`goutoujunshi-jev-chat-0.1.10-preview-debug.apk`](https://github.com/svcgv/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-0.1.10-preview-debug.apk) | Android 11+ 调试预览包，APK 文件名带版本号。**上游 APK 不含本 fork 的新采集与绑定功能，请本地构建。** |
 
 三端现已接入核对原文、Jev／DeepSeek 策略判断、候选排序、详细分析、口吻改写、关系阶段与目标，以及 K 线示例和聊天 CSV 导入。截图展示的是 Mac 界面，Windows 和 Android 的布局及采集能力仍有差异；Android 微信一对一采集为实验性功能，需真机验证。各端的操作与已知限制见 [Windows 使用说明](integrations/jev_windows/README.md)和 [Android 使用说明](integrations/jev_android/README.md)。
 

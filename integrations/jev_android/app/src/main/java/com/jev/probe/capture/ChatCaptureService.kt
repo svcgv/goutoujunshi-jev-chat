@@ -312,6 +312,9 @@ open class ChatCaptureService : AccessibilityService() {
             cancelWork()
             activePkg = pkg
             currentSnapshot = snapshot
+            // Moved to a different conversation: put the panel away. It comes
+            // back only when the user taps the bubble.
+            overlay?.collapse()
             overlay?.resetForNewConversation()
         }
         updateBindingSummary(snapshot, pkg.orEmpty())

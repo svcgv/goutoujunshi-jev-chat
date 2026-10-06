@@ -164,6 +164,10 @@ class OverlayController(private val ctx: Context) {
         val p = buildPanel()
         val r = FrameLayout(ctx)
         r.addView(p)
+        // The window is created up-front (so content can be built into it) but
+        // stays invisible until the user taps the bubble. Switching chats must
+        // never pop the panel open on its own.
+        r.visibility = View.GONE
         panelRoot = r
         try { wm.addView(r, params) } catch (e: Exception) {
             android.util.Log.e("JEVASSIST", "panel addView failed: ${e.message}"); panelRoot = null
@@ -202,7 +206,7 @@ class OverlayController(private val ctx: Context) {
     private fun buildPanel(): LinearLayout {
         val p = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            visibility = View.VISIBLE
+            visibility = View.GONE
             background = card(18, panelBg(), stroke = true)
             elevation = dp(8).toFloat()
             setPadding(dp(14), dp(12), dp(14), dp(12))
@@ -343,8 +347,9 @@ class OverlayController(private val ctx: Context) {
         ensurePanel()
         val params = panelLp ?: return
         placePanel(bubbleParams, params)
-        panelRoot?.visibility = View.VISIBLE
         expanded = true
+        panel?.visibility = View.VISIBLE
+        panelRoot?.visibility = if (OverlayVisibility.panelVisible(true, false)) View.VISIBLE else View.GONE
         bubble?.alpha = 1f
         // The first placement uses the estimated height; once the panel has
         // measured itself, re-place it so a short panel still fits fully.
@@ -373,6 +378,7 @@ class OverlayController(private val ctx: Context) {
         reviewCancel?.invoke()
         reviewCancel = null
         setPanelFocusable(false)
+        panel?.visibility = View.GONE
         panelRoot?.visibility = View.GONE
         expanded = false
     }
@@ -488,7 +494,6 @@ class OverlayController(private val ctx: Context) {
      */
     fun resetForNewConversation() {
         reviewCancel = null
-        releaseFocus()
         bindingSummary = "未绑定对象 · 不加载历史"
         lastJudgment = null
         lastFill = null
@@ -496,6 +501,11 @@ class OverlayController(private val ctx: Context) {
         evidenceSnapshot = null
         replyError = null
         contentBox?.removeAllViews()
+    }
+
+    /** Collapse the panel if open. Used when moving to a different conversation. */
+    fun collapse() {
+        if (expanded) collapsePanel()
     }
 
     fun finishReview() { reviewCancel = null }
@@ -572,11 +582,16 @@ class OverlayController(private val ctx: Context) {
      * removed: the window (and everything on it) must survive the round trip.
      */
     fun setHiddenForShot(hidden: Boolean) {
-        root?.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
-        panelRoot?.visibility =
-            if (hidden) View.INVISIBLE else if (expanded) View.VISIBLE else View.GONE
+        root?.visibility = if (OverlayVisibility.bubbleVisible(hidden)) View.VISIBLE else View.INVISIBLE
+        panelRoot?.visibility = if (OverlayVisibility.panelVisible(expanded, hidden))
+            View.VISIBLE else if (hidden) View.INVISIBLE else View.GONE
     }
 
+    /**
+     * Record an error for the panel and surface it as a toast, but never force
+     * the panel open: errors can be raised by merely switching chats (e.g.
+     * landing on a group), and that must not pop the panel over the chat.
+     */
     fun showError(msg: String) {
         ensureRoot(); ensurePanel(); bubble?.alpha = 1f
         setContent(listOf(
@@ -586,7 +601,8 @@ class OverlayController(private val ctx: Context) {
                 "重新识别" to { onOcrCapture?.invoke() },
                 "系统授权截屏" to { onProjectionCapture?.invoke() },
                 "导入聊天截图" to { onImportScreenshot?.invoke() }))))
-        if (!expanded) toggle()
+        bubble?.alpha = 0.55f
+        toast(msg)
     }
 
     fun showJudgment(a: Analysis) {

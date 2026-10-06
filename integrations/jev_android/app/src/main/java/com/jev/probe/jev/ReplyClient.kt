@@ -150,7 +150,9 @@ class ReplyClient(private val prefs: Prefs) {
         val body = JSONObject()
             .put("model", prefs.replyModel)
             .put("messages", messages)
-            .put("temperature", temperature)
+        // Sampling parameters are not portable across GPT/proxy models.
+        if (java.net.URI(url).host in listOf("api.deepseek.com", "dashscope.aliyuncs.com"))
+            body.put("temperature", temperature)
         val resp = HttpJson.post(url, prefs.effectiveReplyKey(), body, Route.REPLY, HttpJson.headersFor(url))
         val choice = resp.optJSONArray("choices")?.optJSONObject(0)
             ?: throw IllegalArgumentException("回复模型没有返回结果，请重试")

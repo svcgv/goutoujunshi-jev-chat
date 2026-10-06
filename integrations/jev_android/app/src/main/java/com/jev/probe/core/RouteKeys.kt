@@ -23,8 +23,9 @@ internal object RouteKeys {
     fun reply(replyKey: String, judgeKey: String, replyUrl: String, judgeUrl: String): String =
         replyKey.ifBlank { if (sameOrigin(replyUrl, judgeUrl)) judgeKey else "" }
 
-    fun strategy(strategyKey: String, replyKey: String, replyUrl: String): String =
-        strategyKey.ifBlank { if (sameOrigin(replyUrl, "https://api.deepseek.com/v1")) replyKey else "" }
+    fun strategy(strategyKey: String, replyKey: String, replyUrl: String,
+                 strategyUrl: String = "https://api.deepseek.com/v1"): String =
+        strategyKey.ifBlank { if (sameOrigin(replyUrl, strategyUrl)) replyKey else "" }
 
     fun vision(visionKey: String, replyKey: String, judgeKey: String,
                visionUrl: String, replyUrl: String, judgeUrl: String): String =

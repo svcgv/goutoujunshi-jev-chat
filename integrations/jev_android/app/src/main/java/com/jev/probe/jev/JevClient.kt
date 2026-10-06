@@ -16,7 +16,7 @@ class JevClient(private val prefs: Prefs) {
 
     private val judgeClient = JudgeClient(prefs)
     private val replyClient = ReplyClient(prefs)
-    private val deepSeekStrategy = DeepSeekStrategyClient(prefs)
+    private val strategyClient = StrategyClient(prefs)
 
     fun details(snapshot: ChatSnapshot, relationship: String, judgment: Analysis, ctx: ChatContext? = null): String =
         replyClient.details(snapshot, relationship, judgment, ctx)
@@ -29,15 +29,15 @@ class JevClient(private val prefs: Prefs) {
 
     fun rerank(snapshot: ChatSnapshot, relationship: String, judgment: Analysis,
                candidates: List<String>, ctx: ChatContext? = null): List<RankedReply> = try {
-        if (prefs.strategyProvider == "deepseek")
-            deepSeekStrategy.rank(snapshot, relationship, judgment.strategy ?: "澄清", candidates, ctx)
+        if (prefs.usesChatStrategy())
+            strategyClient.rank(snapshot, relationship, judgment.strategy ?: "澄清", candidates, ctx)
         else judgeClient.rank(snapshot, relationship, candidates, ctx)
     } catch (_: Exception) { candidates.map { RankedReply(it, 0.0) } }
 
     /** The 7 judgment questions. Errors come back inside [Analysis.error]. */
     fun judge(snapshot: ChatSnapshot, relationship: String, ctx: ChatContext? = null): Analysis =
         if (GoutouGuidance.explicitBoundary(snapshot)) GoutouGuidance.boundaryAnalysis()
-        else if (prefs.strategyProvider == "deepseek") deepSeekStrategy.judge(snapshot, relationship, ctx)
+        else if (prefs.usesChatStrategy()) strategyClient.judge(snapshot, relationship, ctx)
         else judgeClient.judge(snapshot, relationship, ctx)
 
     /** Draft 3 candidates on the reply route, then rank them on the judge route. */
@@ -52,8 +52,8 @@ class JevClient(private val prefs: Prefs) {
         // A ranking outage must not discard drafts that were already generated.
         // Zero means "ranking pending" in the overlay, not a 0% success chance.
         return try {
-            if (prefs.strategyProvider == "deepseek")
-                deepSeekStrategy.rank(snapshot, relationship, judgment?.strategy ?: "澄清", candidates, ctx)
+            if (prefs.usesChatStrategy())
+                strategyClient.rank(snapshot, relationship, judgment?.strategy ?: "澄清", candidates, ctx)
             else judgeClient.rank(snapshot, relationship, candidates, ctx)
         }
         catch (_: Exception) { candidates.map { RankedReply(it, 0.0) } }

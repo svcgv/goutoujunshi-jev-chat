@@ -30,7 +30,8 @@ import com.jev.probe.core.kb.KbStore
 import com.jev.probe.jev.JudgeClient
 import com.jev.probe.jev.ReplyClient
 import com.jev.probe.jev.VisionClient
-import com.jev.probe.jev.DeepSeekStrategyClient
+import com.jev.probe.jev.StrategyClient
+import com.jev.probe.core.StrategyRoute
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
@@ -71,40 +72,55 @@ class SettingsActivity : AppCompatActivity() {
         // =================== 接口 ===================
         root.addView(section("接口"))
 
-        // Mac-aligned strategy choice. DeepSeek is an independent official route;
-        // its key can reuse the reply key only when the reply host is DeepSeek.
         val strategyCard = card()
         strategyCard.addView(cardTitle("策略判断"))
-        strategyCard.addView(text("Jev 或 DeepSeek 独立判断；回复模型在下方单独选择。", 12f, sub))
-        var strategyIdx = if (prefs.strategyProvider == "deepseek") 1 else 0
-        strategyCard.addView(pills(listOf("Jev", "DeepSeek 官方"), strategyIdx) {
+        strategyCard.addView(text("无需 Jev：CLI-Proxy-API 可接 DeepSeek / GPT；回复模型在下方独立配置。", 12f, sub))
+        val strategyProviders = listOf("jev", "deepseek", Prefs.STRATEGY_COMPATIBLE)
+        var strategyIdx = strategyProviders.indexOf(prefs.strategyProvider).coerceAtLeast(0)
+        val strategyBaseEdit = edit(prefs.strategyBaseUrl, Prefs.DEFAULT_PROXY_BASE)
+        val strategyModelEdit = edit(prefs.strategyModel, "填写代理 /v1/models 返回的模型 ID")
+        val strategyKeyEdit = edit(prefs.strategyKey, "代理的客户端 API Key，不是上游登录凭据", password = true)
+        strategyCard.addView(pills(listOf("Jev", "DeepSeek 官方", "CLI-Proxy-API / 兼容"), strategyIdx) {
+            if (it != strategyIdx && it != 0) {
+                strategyKeyEdit.setText("")
+                strategyModelEdit.setText(if (it == 1) Prefs.DEEPSEEK_MODEL else "")
+            }
             strategyIdx = it
         })
-        strategyCard.addView(label("DeepSeek 策略模型"))
-        val strategyModelEdit = edit(prefs.strategyModel, "deepseek-flash")
+        strategyCard.addView(label("策略 Base URL（仅兼容路线使用，包含 /v1）"))
+        strategyCard.addView(strategyBaseEdit)
+        strategyCard.addView(label("策略模型 ID"))
         strategyCard.addView(strategyModelEdit)
-        strategyCard.addView(label("DeepSeek 策略密钥"))
-        val strategyKeyEdit = edit(prefs.strategyKey, "仅在选择 DeepSeek 时使用", password = true)
+        strategyCard.addView(label("策略接口密钥"))
         strategyCard.addView(strategyKeyEdit)
-        strategyCard.addView(text("回复接口也选 DeepSeek 官方时，可复用下方回复密钥。" +
-            "策略 token 权重只在三次标签轮换一致时展示，不能当作回复成功率。", 11f, sub))
+        strategyCard.addView(text("同一协议、主机和端口可复用下方回复密钥；跨服务须单独填写。" +
+            "兼容路线不请求 logprobs，也不发送 DeepSeek 专用参数；模型自评不是成功率。" +
+            "127.0.0.1 指手机本机；电脑代理可通过 adb reverse tcp:8317 tcp:8317 连接。", 11f, sub))
         val strategyResult = resultText()
-        strategyCard.addView(cardBtn("测试 DeepSeek 策略") {
-            val model = strategyModelEdit.text.toString().trim()
-            val key = RouteKeys.strategy(strategyKeyEdit.text.toString().trim(),
-                replyKeyEdit.text.toString().trim(), replyBaseInput.text.toString().trim())
-            if (model.isBlank() || key.isBlank()) {
-                strategyResult.text = "请填写 DeepSeek 策略模型和密钥"; return@cardBtn
+        strategyCard.addView(cardBtn("测试策略判断") {
+            if (strategyIdx == 0) {
+                strategyResult.text = "Jev 请使用下方判断接口测试"; return@cardBtn
             }
-            strategyResult.text = "测试中…"
+            val model = strategyModelEdit.text.toString().trim()
+            val provider = strategyProviders[strategyIdx]
+            val base = if (provider == "deepseek") Prefs.DEEPSEEK_BASE else strategyBaseEdit.text.toString().trim()
+            val endpoint = try { StrategyRoute.endpoint(base) } catch (_: Exception) {
+                strategyResult.text = "请填写有效的 HTTP(S) 策略 Base URL"; return@cardBtn
+            }
+            val key = RouteKeys.strategy(strategyKeyEdit.text.toString().trim(),
+                replyKeyEdit.text.toString().trim(), replyBaseInput.text.toString().trim(), endpoint)
+            if (model.isBlank() || key.isBlank()) {
+                strategyResult.text = "请填写策略模型 ID 和密钥"; return@cardBtn
+            }
+            strategyResult.text = "测试中…（仅发送示例对话）"
             val probe = draftPrefs("strategy_probe") {
-                strategyProvider = "deepseek"; strategyModel = model; strategyKey = key
+                strategyProvider = provider; strategyBaseUrl = base; strategyModel = model; strategyKey = key
             }
             worker.execute {
                 val demo = ChatSnapshot("连通测试", listOf(Msg("other", "这周有点忙，下周再说吧")))
-                val result = DeepSeekStrategyClient(probe).judge(demo, prefs.relationship)
+                val result = StrategyClient(probe).judge(demo, Prefs.DEFAULT_REL)
                 main.post { strategyResult.text = result.error ?: "成功 · ${result.strategy} · " +
-                    (if (result.strategyWeights.isEmpty()) "token 权重暂不可用" else "已取得策略相对权重") }
+                    (if (result.strategyWeights.isEmpty()) "模型判断，非成功率" else "已取得策略相对权重") }
             }
         })
         strategyCard.addView(strategyResult)
@@ -113,7 +129,7 @@ class SettingsActivity : AppCompatActivity() {
         // --- 判断接口（Jev） ---
         val judgeCard = card()
         judgeCard.addView(cardTitle("判断接口（Jev）"))
-        judgeCard.addView(text("选 Jev 策略时使用；选 DeepSeek 策略时可留空。", 12f, sub))
+        judgeCard.addView(text("选 Jev 策略时使用；选 DeepSeek 或兼容策略时可留空。", 12f, sub))
 
         val judgeBaseEdit = edit(prefs.judgeBaseUrl, Prefs.DEFAULT_JUDGE_BASE_OPENROUTER)
         val judgeModelEdit = edit(prefs.judgeModel, Prefs.DEFAULT_JUDGE_MODEL_OPENROUTER)
@@ -199,14 +215,16 @@ class SettingsActivity : AppCompatActivity() {
             Prefs.DEFAULT_REPLY_BASE -> 0
             Prefs.DEEPSEEK_BASE -> 1
             Prefs.DASHSCOPE_BASE -> 2
-            else -> 3
+            Prefs.DEFAULT_PROXY_BASE -> 3
+            else -> 4
         }
         replyCard.addView(pills(
-            listOf("OpenRouter", "DeepSeek 官方", "通义兼容", "自定义"), replyIdx) { idx ->
+            listOf("OpenRouter", "DeepSeek 官方", "通义兼容", "CLI-Proxy-API", "自定义"), replyIdx) { idx ->
             when (idx) {
                 0 -> { replyBaseEdit.setText(Prefs.DEFAULT_REPLY_BASE); replyModelEdit.setText(Prefs.DEFAULT_REPLY_MODEL) }
                 1 -> { replyBaseEdit.setText(Prefs.DEEPSEEK_BASE); replyModelEdit.setText(Prefs.DEEPSEEK_MODEL) }
                 2 -> { replyBaseEdit.setText(Prefs.DASHSCOPE_BASE); replyModelEdit.setText(Prefs.DASHSCOPE_MODEL) }
+                3 -> { replyBaseEdit.setText(Prefs.DEFAULT_PROXY_BASE); replyModelEdit.setText("") }
             }
         })
         replyCard.addView(label("Base URL"))
@@ -411,8 +429,22 @@ class SettingsActivity : AppCompatActivity() {
 
         // =================== 保存 ===================
         root.addView(primaryBtn("保存全部设置") {
-            prefs.strategyProvider = if (strategyIdx == 1) "deepseek" else "jev"
-            prefs.strategyModel = strategyModelEdit.text.toString().trim().ifBlank { "deepseek-flash" }
+            if (strategyIdx != 0) {
+                try {
+                    StrategyRoute.endpoint(if (strategyIdx == 1) Prefs.DEEPSEEK_BASE else strategyBaseEdit.text.toString())
+                    require(strategyModelEdit.text.toString().isNotBlank())
+                } catch (_: Exception) {
+                    Toast.makeText(this, "请填写有效策略地址和模型 ID", Toast.LENGTH_LONG).show()
+                    return@primaryBtn
+                }
+            }
+            if (replyModelEdit.text.toString().isBlank()) {
+                Toast.makeText(this, "请填写回复模型 ID", Toast.LENGTH_LONG).show()
+                return@primaryBtn
+            }
+            prefs.strategyProvider = strategyProviders[strategyIdx]
+            prefs.strategyBaseUrl = strategyBaseEdit.text.toString().trim()
+            prefs.strategyModel = strategyModelEdit.text.toString().trim()
             prefs.strategyKey = strategyKeyEdit.text.toString().trim()
             // Address wins over the pill: a preset HOST in the box means that
             // preset's provider (and so its path), whatever the pill last said.

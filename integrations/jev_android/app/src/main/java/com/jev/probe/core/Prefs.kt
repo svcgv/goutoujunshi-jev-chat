@@ -60,20 +60,34 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
         get() = sp.getString(K_JUDGE_MODEL, DEFAULT_JUDGE_MODEL_OPENROUTER) ?: DEFAULT_JUDGE_MODEL_OPENROUTER
         set(v) = sp.edit().putString(K_JUDGE_MODEL, v.trim()).apply()
 
-    /** Jev or independent DeepSeek strategy judgment. */
+    /** Jev, official DeepSeek, or an OpenAI-compatible proxy. */
     var strategyProvider: String
-        get() = sp.getString(K_STRATEGY_PROVIDER, "jev") ?: "jev"
-        set(v) = sp.edit().putString(K_STRATEGY_PROVIDER, if (v == "deepseek") v else "jev").apply()
+        get() {
+            val default = if (sp.contains(K_JUDGE_PROVIDER) || sp.contains(K_JUDGE_KEY)) "jev"
+                          else STRATEGY_COMPATIBLE
+            return sp.getString(K_STRATEGY_PROVIDER, default) ?: default
+        }
+        set(v) = sp.edit().putString(K_STRATEGY_PROVIDER, if (v in listOf("deepseek", STRATEGY_COMPATIBLE)) v else "jev").apply()
 
     var strategyModel: String
-        get() = sp.getString(K_STRATEGY_MODEL, "deepseek-flash") ?: "deepseek-flash"
+        get() = sp.getString(K_STRATEGY_MODEL, if (strategyProvider == STRATEGY_COMPATIBLE) "" else DEEPSEEK_MODEL) ?: ""
         set(v) = sp.edit().putString(K_STRATEGY_MODEL, v.trim()).apply()
 
     var strategyKey: String
         get() = sp.getString(K_STRATEGY_KEY, "") ?: ""
         set(v) = sp.edit().putString(K_STRATEGY_KEY, v.trim()).apply()
 
-    fun effectiveStrategyKey(): String = RouteKeys.strategy(strategyKey, replyKey, replyEndpoint())
+    var strategyBaseUrl: String
+        get() = sp.getString(K_STRATEGY_BASE, DEFAULT_PROXY_BASE) ?: DEFAULT_PROXY_BASE
+        set(v) = sp.edit().putString(K_STRATEGY_BASE, v.trim()).apply()
+
+    fun strategyEndpoint(): String = StrategyRoute.endpoint(
+        if (strategyProvider == "deepseek") DEEPSEEK_BASE else strategyBaseUrl)
+
+    fun usesChatStrategy(): Boolean = strategyProvider != "jev"
+
+    fun effectiveStrategyKey(): String = RouteKeys.strategy(strategyKey, replyKey,
+        replyEndpoint(), strategyEndpoint())
 
     /** Back-compat alias so older call sites keep compiling. */
     var openRouterKey: String
@@ -217,7 +231,9 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
     /** Never send a reply or judge key to a different vision host. */
     fun effectiveVisionKey(): String = RouteKeys.vision(visionKey, replyKey, judgeKey,
         visionEndpoint(), replyEndpoint(), judgeEndpoint()).ifBlank {
-        if (visionBaseUrl.trim().trimEnd('/') == DEEPSEEK_BASE) strategyKey else ""
+        if (usesChatStrategy()) try {
+            RouteKeys.strategy("", strategyKey, strategyEndpoint(), visionEndpoint())
+        } catch (_: Exception) { "" } else ""
     }
 
     /** Full POST URL for the Jev decisions call, per provider. */
@@ -247,8 +263,10 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
     }
 
     /** Readiness gate: the judge route is the one that must be configured. */
-    fun hasKey(): Boolean = if (strategyProvider == "deepseek") effectiveStrategyKey().isNotBlank()
-                            else judgeKey.isNotBlank()
+    fun hasKey(): Boolean = try {
+        if (usesChatStrategy()) strategyModel.isNotBlank() && effectiveStrategyKey().isNotBlank()
+        else judgeKey.isNotBlank()
+    } catch (_: Exception) { false }
 
     companion object {
         private const val TAG = "JEVASSIST"
@@ -263,6 +281,7 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
         private const val K_JUDGE_KEY = "judge_key"
         private const val K_JUDGE_MODEL = "judge_model"
         private const val K_STRATEGY_PROVIDER = "strategy_provider"
+        private const val K_STRATEGY_BASE = "strategy_base_url"
         private const val K_STRATEGY_MODEL = "strategy_model"
         private const val K_STRATEGY_KEY = "strategy_key"
         private const val K_REPLY_BASE = "reply_base_url"
@@ -285,6 +304,9 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
         private const val K_BUBBLE_Y = "bubble_y"
         private const val K_BUBBLE_X = "bubble_x"
         private const val K_AUTO = "auto_analyze"
+
+        const val STRATEGY_COMPATIBLE = "compatible"
+        const val DEFAULT_PROXY_BASE = "http://127.0.0.1:8317/v1"
 
         const val PROVIDER_OPENROUTER = "openrouter"
         const val PROVIDER_TYPESAFE = "typesafe"

@@ -391,7 +391,7 @@ open class ChatCaptureService : AccessibilityService() {
         val pkg = activePkg ?: foregroundPkg ?: ""
         if (!snapshotIsCurrent(snapshot, pkg)) return
         if (!prefs.hasKey() && !GoutouGuidance.explicitBoundary(snapshot)) {
-            overlay?.showError("未设置判断接口密钥，去设置里填"); return
+            overlay?.showError("请先在设置里配置策略接口地址、模型 ID 和密钥"); return
         }
         if (!session.beginAnalysis(token)) return
         overlay?.showLoading(); overlay?.setNote(snapshot.note); overlay?.setSnapshot(snapshot)

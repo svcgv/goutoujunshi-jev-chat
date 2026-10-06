@@ -8,6 +8,10 @@
 
 If it helps you, [Star the project](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/stargazers) so you can find it again and help others discover it.
 
+## This fork: Android CLI-Proxy-API support (no Jev required)
+
+Android strategy judgment and candidate ranking can use a configurable OpenAI-compatible Chat Completions proxy and the actual DeepSeek / GPT model IDs exposed by that proxy. Reply generation is configured independently; existing Jev and official DeepSeek routes remain available. See the [Android proxy setup guide (Chinese)](integrations/jev_android/CLI_PROXY_API.md). Upstream release APKs do not contain these local changes. The existing Android WeChat capture limitation is not fixed by this change.
+
 ## Latest update: Android review, cancellation, and DeepSeek context
 
 On October 6, 2026, the Android implementation was updated:

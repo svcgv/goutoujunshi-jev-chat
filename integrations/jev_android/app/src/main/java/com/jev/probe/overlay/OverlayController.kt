@@ -505,7 +505,7 @@ class OverlayController(private val ctx: Context) {
             val weight = a.strategyWeights[strategy]
             val detail = if (weight != null) "策略选择权重 ${(weight * 100).roundToInt()}%"
                          else "策略 token 权重暂不可用"
-            views.add(hint("DeepSeek 主策略 · $strategy · $detail；不是回复成功率"))
+            views.add(hint("聊天模型主策略 · $strategy · $detail；不是回复成功率"))
         }
         // Compact secondary line: needs · action · reply-now.
         val bits = ArrayList<String>()
@@ -533,7 +533,7 @@ class OverlayController(private val ctx: Context) {
         }
 
         views.add(divider())
-        views.add(line("候选回复排序（${if (a.strategy != null) "DeepSeek" else "Jev"}）", "#68776F", 12f))
+        views.add(line("候选回复排序（${if (a.strategy != null) "聊天模型" else "Jev"}）", "#68776F", 12f))
         if (generating) {
             views.add(hint("生成中…"))
         } else {

@@ -8,6 +8,10 @@
 
 如果这套聊天副驾对你有用，可以给[项目点一个 Star](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/stargazers)，方便以后找到，也让更多有相同需求的人看到它。
 
+## 本 fork：Android 使用 CLI-Proxy-API（无需 Jev）
+
+Android 策略判断及候选排序支持配置 OpenAI 兼容代理地址，使用代理实际提供的 DeepSeek / GPT 模型 ID；回复模型独立配置。保留 Jev 和 DeepSeek 官方路线。详见 [Android 代理配置](integrations/jev_android/CLI_PROXY_API.md)。这是本地源码修改，文中上游 Release 的 APK 不包含此功能；需自行构建。微信截图采集限制仍未解决。
+
 ## 最近更新：Android 核对、取消任务与 DeepSeek 上下文
 
 2026 年 10 月 6 日，Android 修复了以下使用问题：

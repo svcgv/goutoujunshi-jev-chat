@@ -280,13 +280,14 @@ class OverlayController(private val ctx: Context) {
         cancel?.invoke()
         releaseFocus()
         setContent(listOf(hint(bindingSummary),
-            bigButton("截屏识别一次") { onOcrCapture?.invoke() },
-            bigButton("绑定对象 / 记忆设置") { onSaveContact?.invoke() },
-            bigButton("系统授权截屏") { onProjectionCapture?.invoke() },
-            bigButton("导入聊天截图") { onImportScreenshot?.invoke() },
-            bigButton("查看对象历史") { onShowHistory?.invoke() },
-            bigButton("打开设置") { openSettings() },
-            bigButton("隐藏助手（本次）") { hide() }))
+            actionGroup(listOf(
+                "截屏识别一次" to { onOcrCapture?.invoke() },
+                "绑定对象 / 记忆设置" to { onSaveContact?.invoke() },
+                "系统授权截屏" to { onProjectionCapture?.invoke() },
+                "导入聊天截图" to { onImportScreenshot?.invoke() },
+                "查看对象历史" to { onShowHistory?.invoke() },
+                "打开设置" to { openSettings() },
+                "隐藏助手（本次）" to { hide() }))))
         if (!expanded) toggle()
     }
 
@@ -334,12 +335,14 @@ class OverlayController(private val ctx: Context) {
         // stale conversation) — either way an empty panel must never stay
         // literally blank.
         if (lastJudgment == null || contentBox?.childCount == 0) {
-            setContent(listOf(hint(title?.let { "当前窗口：$it" } ?: "请进入聊天窗口"), hint(bindingSummary),
-                bigButton("绑定对象 / 记忆设置") { onSaveContact?.invoke() },
+            setContent(listOf(
+                hint(title?.let { "当前窗口：$it" } ?: "请进入聊天窗口"), hint(bindingSummary),
                 bigButton("分析当前对话") { onManualAnalyze?.invoke() },
-                bigButton("系统授权截屏") { onProjectionCapture?.invoke() },
-                bigButton("导入聊天截图") { onImportScreenshot?.invoke() },
-                bigButton("查看对象历史") { onShowHistory?.invoke() }))
+                actionGroup(listOf(
+                    "绑定对象 / 记忆设置" to { onSaveContact?.invoke() },
+                    "系统授权截屏" to { onProjectionCapture?.invoke() },
+                    "导入聊天截图" to { onImportScreenshot?.invoke() },
+                    "查看对象历史" to { onShowHistory?.invoke() }))))
         }
     }
 
@@ -366,12 +369,15 @@ class OverlayController(private val ctx: Context) {
                     val selected = contacts.getOrNull(picker.selectedItemPosition - 1)
                     onSave(selected?.id, name.text.toString().trim().ifBlank { selected?.name.orEmpty() }, consent.isChecked)
                 }
-            }, bigButton("解除当前绑定") { finishReview(); releaseFocus(); onUnbind() },
-            bigButton("清空此对象历史（需确认）") {
-                setContent(listOf(hint("删除此对象已保存的聊天历史，不能恢复；绑定与档案保留。"),
-                    bigButton("确认清空") { finishReview(); releaseFocus(); onClear() },
-                    bigButton("取消") { finishReview(); releaseFocus(); onCancel() }))
-            }, bigButton("取消") { finishReview(); releaseFocus(); onCancel() }))
+            },
+            actionGroup(listOf(
+                "解除当前绑定" to { finishReview(); releaseFocus(); onUnbind() },
+                "清空此对象历史（需确认）" to {
+                    setContent(listOf(hint("删除此对象已保存的聊天历史，不能恢复；绑定与档案保留。"),
+                        bigButton("确认清空") { finishReview(); releaseFocus(); onClear() },
+                        actionGroup(listOf("取消" to { finishReview(); releaseFocus(); onCancel() }))))
+                },
+                "取消" to { finishReview(); releaseFocus(); onCancel() }))))
         if (!expanded) toggle()
         lp?.let { it.flags = it.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
             root?.let { view -> runCatching { wm.updateViewLayout(view, lp) } } }
@@ -449,6 +455,7 @@ class OverlayController(private val ctx: Context) {
 
     fun finishReview() { reviewCancel = null }
 
+    /** Primary call to action: one filled, rounded, full-width button. */
     private fun bigButton(label: String, onClick: () -> Unit) = TextView(ctx).apply {
         text = label; textSize = 14f; gravity = Gravity.CENTER
         setTextColor(Color.WHITE); setTypeface(typeface, Typeface.BOLD)
@@ -457,6 +464,40 @@ class OverlayController(private val ctx: Context) {
         layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         setOnClickListener { onClick() }
+    }
+
+    /**
+     * Secondary actions as ONE rounded card with hairline dividers. Stacking
+     * independent rounded buttons produced a scalloped left/right edge and a
+     * tall column of separate pills; a single clipped container keeps the
+     * corners clean and the panel compact.
+     */
+    private fun actionGroup(items: List<Pair<String, () -> Unit>>): View {
+        val group = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            background = card(12, Color.parseColor("#2B5245"))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8) }
+            clipToOutline = true
+        }
+        items.forEachIndexed { index, (label, action) ->
+            if (index > 0) group.addView(View(ctx).apply {
+                setBackgroundColor(Color.parseColor("#406353"))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
+            })
+            group.addView(TextView(ctx).apply {
+                text = label; textSize = 14f; gravity = Gravity.CENTER
+                setTextColor(Color.WHITE)
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                isClickable = true
+                setOnClickListener { action() }
+            })
+        }
+        return group
     }
 
     fun showLoading() {
@@ -494,9 +535,10 @@ class OverlayController(private val ctx: Context) {
         setContent(listOf(
             line("出错了", "#DC2626", 14f, true),
             hint(msg),
-            bigButton("重新识别") { onOcrCapture?.invoke() },
-            bigButton("系统授权截屏") { onProjectionCapture?.invoke() },
-            bigButton("导入聊天截图") { onImportScreenshot?.invoke() }))
+            actionGroup(listOf(
+                "重新识别" to { onOcrCapture?.invoke() },
+                "系统授权截屏" to { onProjectionCapture?.invoke() },
+                "导入聊天截图" to { onImportScreenshot?.invoke() }))))
         if (!expanded) toggle()
     }
 

@@ -31,18 +31,18 @@
 
 ## 获取包含本次修复的 APK
 
-本次 APK 版本为 `0.1.8-preview`（安装版本号 8），对应 Release `v0.1.8-preview`，包含 PR #1、流程修复、CLI-Proxy-API 策略、对象绑定与记忆、悬浮球自由拖拽，以及实验性微信一对一采集。更早版本不含这些改动。
+本次 APK 版本为 `0.1.9-preview`（安装版本号 9），对应 Release `v0.1.9-preview`，包含 CLI-Proxy-API 策略、对象绑定与记忆、实验性微信一对一采集，以及悬浮球修复：自由拖拽更跟手、点击不再跳位、切换会话不自动弹出面板。更早版本不含这些改动。
 
-1. 打开 [GitHub Releases 下载页](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest)，选择 `v0.1.8-preview` 或更新版本。
-2. 下载 `goutoujunshi-jev-chat-0.1.8-preview-debug.apk`，可按同页 `SHA256SUMS.txt` 校验文件。
+1. 打开 [GitHub Releases 下载页](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest)，选择 `v0.1.9-preview` 或更新版本。
+2. 下载 `goutoujunshi-jev-chat-0.1.9-preview-debug.apk`，可按同页 `SHA256SUMS.txt` 校验文件。
 3. 在 Android 11 或更新版本上允许系统安装此来源的应用后安装。
 4. 调试签名不一致时需卸载旧包再安装，卸载会清除应用数据；先记录好需要保留的设置。
 
-开发构建也可从 [Platform preview packages 构建页](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/actions/workflows/platform-build.yml)获取：选择包含 PR #1 的成功运行，在 Artifacts 中下载 `goutoujunshi-jev-chat-android-debug`，解压后安装 `goutoujunshi-jev-chat-0.1.8-preview-debug.apk`。GitHub Actions 附件有保留期限，过期时可从最新源码重新构建。
+开发构建也可从 [Platform preview packages 构建页](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/actions/workflows/platform-build.yml)获取：选择包含 PR #1 的成功运行，在 Artifacts 中下载 `goutoujunshi-jev-chat-android-debug`，解压后安装 `goutoujunshi-jev-chat-0.1.9-preview-debug.apk`。GitHub Actions 附件有保留期限，过期时可从最新源码重新构建。
 
 ## 安装与配置
 
-从[最新 Release](https://github.com/svcgv/goutoujunshi-jev-chat/releases/latest)下载 `goutoujunshi-jev-chat-0.1.8-preview-debug.apk`，在 Android 11 或更新版本上允许系统安装此来源的应用后安装。旧版调试 APK 与新版可能由不同的临时调试证书签名；如提示签名不一致，需卸载旧包再安装，本机应用数据会随卸载清除，先记录好需要保留的设置。打开应用，配置判断和回复接口，按提示授予无障碍、悬浮窗权限，再主动开启助手。应用只生成草稿，由你决定是否发送。
+从[最新 Release](https://github.com/svcgv/goutoujunshi-jev-chat/releases/latest)下载 `goutoujunshi-jev-chat-0.1.9-preview-debug.apk`，在 Android 11 或更新版本上允许系统安装此来源的应用后安装。旧版调试 APK 与新版可能由不同的临时调试证书签名；如提示签名不一致，需卸载旧包再安装，本机应用数据会随卸载清除，先记录好需要保留的设置。打开应用，配置判断和回复接口，按提示授予无障碍、悬浮窗权限，再主动开启助手。应用只生成草稿，由你决定是否发送。
 
 只用 DeepSeek 判断和回复时，在「策略判断」选择「DeepSeek 官方」，在「回复接口」也选择「DeepSeek 官方」，填写模型和密钥后保存全部设置。策略密钥可以单独填写；回复接口指向 DeepSeek 官方时，策略密钥留空可复用回复密钥。「测试 DeepSeek 策略」读取当前表单，因此刚填完也可以测试，正式使用前仍需保存。识图方式独立选择本地 ML Kit 或视觉模型。
 

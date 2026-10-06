@@ -11,6 +11,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.CheckBox
@@ -48,13 +49,18 @@ class OverlayController(private val ctx: Context) {
 
     private val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val prefs = Prefs(ctx)
+    /** Bubble window: a tiny 52dp view. Dragging it re-lays out nothing else. */
     private var root: FrameLayout? = null
     private var bubble: TextView? = null
     private var dangerDot: View? = null
+    private var lp: WindowManager.LayoutParams? = null
+
+    /** Panel window: separate, so the bubble drag never touches its layout. */
+    private var panelRoot: FrameLayout? = null
     private var panel: LinearLayout? = null
     private var contentBox: LinearLayout? = null
+    private var panelLp: WindowManager.LayoutParams? = null
     private var expanded = false
-    private var lp: WindowManager.LayoutParams? = null
 
     var onManualAnalyze: (() -> Unit)? = null
     var onDetails: (() -> Unit)? = null
@@ -119,34 +125,54 @@ class OverlayController(private val ctx: Context) {
     private fun ensureRoot() {
         if (root != null) return
         if (!canOverlay()) { android.util.Log.w("JEVASSIST", "overlay: canDrawOverlays=false"); return }
+        // Exact 52dp window: dragging it moves a view with no children to lay out.
+        val size = dp(BUBBLE_DP)
         val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            size,
+            size,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             val position = BubblePosition.clamp(prefs.bubbleX.takeIf { it >= 0 } ?: dp(8),
-                prefs.bubbleY.takeIf { it >= 0 } ?: dp(150), screenW, screenH, dp(52), dp(8))
+                prefs.bubbleY.takeIf { it >= 0 } ?: dp(150), screenW, screenH, size, dp(8))
             x = position.first; y = position.second
         }
         lp = params
 
         val r = FrameLayout(ctx)
-        val p = buildPanel()
-        val bubbleWrap = buildBubble(params)
-        r.addView(p)
-        r.addView(bubbleWrap)
+        r.addView(buildBubble(params))
         root = r
         try { wm.addView(r, params) } catch (e: Exception) {
             android.util.Log.e("JEVASSIST", "overlay addView failed: ${e.message}"); root = null
         }
     }
 
+    /** The panel lives in its own window so expanding never resizes the bubble. */
+    private fun ensurePanel() {
+        if (panelRoot != null) return
+        if (!canOverlay()) return
+        val params = WindowManager.LayoutParams(
+            dp(PANEL_WIDTH_DP),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.TOP or Gravity.START }
+        panelLp = params
+        val p = buildPanel()
+        val r = FrameLayout(ctx)
+        r.addView(p)
+        panelRoot = r
+        try { wm.addView(r, params) } catch (e: Exception) {
+            android.util.Log.e("JEVASSIST", "panel addView failed: ${e.message}"); panelRoot = null
+        }
+    }
+
     private fun buildBubble(params: WindowManager.LayoutParams): View {
         val wrap = FrameLayout(ctx).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(52), dp(52))
+            layoutParams = FrameLayout.LayoutParams(dp(BUBBLE_DP), dp(BUBBLE_DP))
         }
         val b = TextView(ctx).apply {
             text = "军师"
@@ -158,7 +184,7 @@ class OverlayController(private val ctx: Context) {
                 shape = GradientDrawable.OVAL
                 setColor(Color.argb(235, 43, 82, 69))
             }
-            layoutParams = FrameLayout.LayoutParams(dp(52), dp(52))
+            layoutParams = FrameLayout.LayoutParams(dp(BUBBLE_DP), dp(BUBBLE_DP))
         }
         val dot = View(ctx).apply {
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.TRANSPARENT) }
@@ -176,13 +202,11 @@ class OverlayController(private val ctx: Context) {
     private fun buildPanel(): LinearLayout {
         val p = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
+            visibility = View.VISIBLE
             background = card(18, panelBg(), stroke = true)
             elevation = dp(8).toFloat()
             setPadding(dp(14), dp(12), dp(14), dp(12))
-            layoutParams = FrameLayout.LayoutParams(dp(316), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(56) // sit just below the bubble
-            }
+            layoutParams = FrameLayout.LayoutParams(dp(PANEL_WIDTH_DP), FrameLayout.LayoutParams.WRAP_CONTENT)
         }
         // Header
         val header = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
@@ -221,60 +245,67 @@ class OverlayController(private val ctx: Context) {
     private fun attachBubbleTouch(v: View, params: WindowManager.LayoutParams) {
         var startX = 0; var startY = 0; var touchX = 0f; var touchY = 0f
         var moved = false; var longFired = false
+        val touchSlop = ViewConfiguration.get(ctx).scaledTouchSlop
         val longPress = Runnable {
             if (!moved) { longFired = true; showBubbleMenu() }
         }
         v.setOnTouchListener { _, e ->
-            when (e.action) {
+            when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     startX = params.x; startY = params.y; touchX = e.rawX; touchY = e.rawY
                     moved = false; longFired = false
-                    v.postDelayed(longPress, 500); true
+                    v.postDelayed(longPress, LONG_PRESS_MS); true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val dx = (e.rawX - touchX).toInt(); val dy = (e.rawY - touchY).toInt()
-                    if (abs(dx) > dp(6) || abs(dy) > dp(6)) moved = true
-                    if (moved) {
+                    val dx = e.rawX - touchX; val dy = e.rawY - touchY
+                    if (!moved && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
+                        moved = true
                         v.removeCallbacks(longPress)
-                        // Dragging the bubble collapses the panel without restoring an old anchor.
-                        if (expanded) {
-                            reviewCancel?.invoke(); reviewCancel = null
-                            expanded = false; panel?.visibility = View.GONE
-                            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        }
-                        val pos = BubblePosition.clamp(startX + dx, startY + dy, screenW, screenH, dp(52), dp(8))
-                        params.x = pos.first; params.y = pos.second
+                        // The panel is a separate window; drop it while dragging.
+                        if (expanded) collapsePanel()
                     }
-                    root?.let { runCatching { wm.updateViewLayout(it, params) } }
+                    if (moved) {
+                        val pos = BubblePosition.clamp(
+                            (startX + dx).toInt(), (startY + dy).toInt(),
+                            screenW, screenH, dp(BUBBLE_DP), dp(8))
+                        params.x = pos.first; params.y = pos.second
+                        // One layout call per move event; the window holds a single
+                        // childless-size view, so this stays cheap and follows the finger.
+                        root?.let { runCatching { wm.updateViewLayout(it, params) } }
+                    }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
                     v.removeCallbacks(longPress)
-                    if (moved) {
-                        saveBubblePosition(params); true  // stays where dropped, even after a long press
-                    } else if (longFired) true else { toggle(); true }
+                    if (moved) saveBubblePosition(params)
+                    else if (!longFired) toggle()
+                    true
                 }
-                MotionEvent.ACTION_CANCEL -> { v.removeCallbacks(longPress); if (moved) saveBubblePosition(params); true }
+                MotionEvent.ACTION_CANCEL -> {
+                    v.removeCallbacks(longPress)
+                    if (moved) saveBubblePosition(params)
+                    true
+                }
                 else -> false
             }
         }
     }
 
     private fun saveBubblePosition(params: WindowManager.LayoutParams) {
-        collapsedX = params.x; collapsedY = params.y
         prefs.bubbleX = params.x; prefs.bubbleY = params.y
     }
 
     fun reposition() {
         val params = lp ?: return
         if (expanded) toggle()
-        val pos = BubblePosition.clamp(prefs.bubbleX, prefs.bubbleY, screenW, screenH, dp(52), dp(8))
+        val pos = BubblePosition.clamp(prefs.bubbleX, prefs.bubbleY, screenW, screenH, dp(BUBBLE_DP), dp(8))
         params.x = pos.first; params.y = pos.second
         saveBubblePosition(params)
         root?.let { runCatching { wm.updateViewLayout(it, params) } }
     }
 
     private fun showBubbleMenu() {
+        ensureRoot(); ensurePanel()
         val cancel = reviewCancel
         reviewCancel = null
         cancel?.invoke()
@@ -299,36 +330,57 @@ class OverlayController(private val ctx: Context) {
         if (expanded) toggle()
     }
 
-    private var collapsedX = dp(6)
-    private var collapsedY = dp(150)
-
     private fun toggle() {
-        expanded = !expanded
-        val params = lp ?: return
-        if (expanded) {
-            // Open the panel from the left, fully on-screen and up high (clear of the
-            // input box), regardless of which edge the bubble was snapped to.
-            collapsedX = params.x; collapsedY = params.y
-            params.x = dp(6)
-            val maxTop = (screenH * 0.14f).roundToInt()
-            if (params.y > maxTop) params.y = maxTop
-            panel?.visibility = View.VISIBLE
-        } else {
-            reviewCancel?.invoke()
-            reviewCancel = null
-            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-            panel?.visibility = View.GONE
-            val pos = BubblePosition.clamp(collapsedX, collapsedY, screenW, screenH, dp(52), dp(8))
-            params.x = pos.first; params.y = pos.second
-        }
-        android.util.Log.d("JEVASSIST", "overlay: toggle expanded=$expanded x=${params.x} y=${params.y} saved=($collapsedX,$collapsedY)")
-        root?.let { runCatching { wm.updateViewLayout(it, params) } }
+        if (expanded) collapsePanel() else expandPanel()
+    }
+
+    /**
+     * Show the panel window next to the bubble. The bubble keeps its position:
+     * expanding must never drag the user's bubble somewhere else.
+     */
+    private fun expandPanel() {
+        val bubbleParams = lp ?: return
+        ensurePanel()
+        val params = panelLp ?: return
+        placePanel(bubbleParams, params)
+        panelRoot?.visibility = View.VISIBLE
+        expanded = true
+        bubble?.alpha = 1f
+        // The first placement uses the estimated height; once the panel has
+        // measured itself, re-place it so a short panel still fits fully.
+        panelRoot?.post { if (expanded) placePanel(bubbleParams, params) }
+    }
+
+    private fun placePanel(bubbleParams: WindowManager.LayoutParams,
+                           params: WindowManager.LayoutParams) {
+        val measured = panelRoot?.height?.takeIf { it > 0 }
+            ?: (screenH * 0.40f).roundToInt()
+        val pos = PanelPlacement.place(bubbleParams.x, bubbleParams.y, dp(BUBBLE_DP),
+            dp(PANEL_WIDTH_DP), measured, screenW, screenH, dp(8))
+        params.x = pos.first; params.y = pos.second
+        panelRoot?.let { runCatching { wm.updateViewLayout(it, params) } }
+    }
+
+    /** Focusable while a text field is showing, so the keyboard can open. */
+    private fun setPanelFocusable(focusable: Boolean) {
+        val params = panelLp ?: return
+        params.flags = if (focusable) params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+                       else params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        panelRoot?.let { runCatching { wm.updateViewLayout(it, params) } }
+    }
+
+    private fun collapsePanel() {
+        reviewCancel?.invoke()
+        reviewCancel = null
+        setPanelFocusable(false)
+        panelRoot?.visibility = View.GONE
+        expanded = false
     }
 
     // ------------------------------------------------------------ public API
 
     fun showIdle(title: String?) {
-        ensureRoot(); bubble?.alpha = 0.55f
+        ensureRoot(); ensurePanel(); bubble?.alpha = 0.55f
         // Either there is genuinely nothing to show yet, or the panel is empty
         // for some other reason (root got rebuilt after hide(), leaving
         // contentBox with zero children while lastJudgment still points at a
@@ -349,7 +401,7 @@ class OverlayController(private val ctx: Context) {
     fun showBinding(title: String, contacts: List<Contact>, selectedId: String?, remember: Boolean,
                     onSave: (String?, String, Boolean) -> Unit, onUnbind: () -> Unit,
                     onClear: () -> Unit, onCancel: () -> Unit) {
-        ensureRoot()
+        ensureRoot(); ensurePanel()
         val picker = Spinner(ctx).apply {
             adapter = ArrayAdapter(ctx, android.R.layout.simple_spinner_dropdown_item,
                 listOf("新建对象") + contacts.map { it.name })
@@ -379,19 +431,17 @@ class OverlayController(private val ctx: Context) {
                 },
                 "取消" to { finishReview(); releaseFocus(); onCancel() }))))
         if (!expanded) toggle()
-        lp?.let { it.flags = it.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
-            root?.let { view -> runCatching { wm.updateViewLayout(view, lp) } } }
+        setPanelFocusable(true)
     }
 
     private fun releaseFocus() {
-        lp?.let { it.flags = it.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-            root?.let { view -> runCatching { wm.updateViewLayout(view, lp) } } }
+        setPanelFocusable(false)
     }
 
     /** OCR text is editable because both wording and speaker attribution can be wrong. */
     fun showReview(snapshot: ChatSnapshot, onConfirm: (ChatSnapshot) -> Unit,
                    onCancel: () -> Unit) {
-        ensureRoot()
+        ensureRoot(); ensurePanel()
         reviewCancel = onCancel
         val editor = EditText(ctx).apply {
             setText(snapshot.messages.joinToString("\n") {
@@ -411,10 +461,7 @@ class OverlayController(private val ctx: Context) {
                 toast("每行请以“我：”或“对方：”开头，并核对内容")
             } else {
                 // Keep cancellation while focus is returning to the chat window.
-                lp?.let { params ->
-                    params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                    root?.let { runCatching { wm.updateViewLayout(it, params) } }
-                }
+                releaseFocus()
                 onConfirm(snapshot.copy(messages = messages,
                     note = (snapshot.note ?: "") + " · 原文与说话人已人工核对"))
             }
@@ -424,9 +471,10 @@ class OverlayController(private val ctx: Context) {
             hint("只支持一对一聊天。请核对每行的我／对方和正文，确认后按记忆设置保存，再调用模型。"),
             editor, confirm))
         if (!expanded) toggle()
-        lp?.let { params ->
-            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
-            root?.let { runCatching { wm.updateViewLayout(it, params) } }
+        // Re-place with the real measured height, then take focus for the editor.
+        panelRoot?.post {
+            if (expanded) expandPanel()
+            setPanelFocusable(true)
         }
     }
 
@@ -440,10 +488,7 @@ class OverlayController(private val ctx: Context) {
      */
     fun resetForNewConversation() {
         reviewCancel = null
-        lp?.let { params ->
-            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-            root?.let { runCatching { wm.updateViewLayout(it, params) } }
-        }
+        releaseFocus()
         bindingSummary = "未绑定对象 · 不加载历史"
         lastJudgment = null
         lastFill = null
@@ -501,7 +546,7 @@ class OverlayController(private val ctx: Context) {
     }
 
     fun showLoading() {
-        ensureRoot(); bubble?.alpha = 1f
+        ensureRoot(); ensurePanel(); bubble?.alpha = 1f
         ctxNotes = 0; ctxHistory = 0   // counts for the round that is starting
         replyError = null              // this round has not failed (yet)
         setContent(listOf(hint("分析中…")))
@@ -528,10 +573,12 @@ class OverlayController(private val ctx: Context) {
      */
     fun setHiddenForShot(hidden: Boolean) {
         root?.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
+        panelRoot?.visibility =
+            if (hidden) View.INVISIBLE else if (expanded) View.VISIBLE else View.GONE
     }
 
     fun showError(msg: String) {
-        ensureRoot(); bubble?.alpha = 1f
+        ensureRoot(); ensurePanel(); bubble?.alpha = 1f
         setContent(listOf(
             line("出错了", "#DC2626", 14f, true),
             hint(msg),
@@ -556,7 +603,7 @@ class OverlayController(private val ctx: Context) {
     }
 
     fun showDetails(text: String, heading: String = "详细分析") {
-        ensureRoot()
+        ensureRoot(); ensurePanel()
         setContent(listOf(line(heading, "#24382d", 17f, true),
             hint("分析来自当前已核对的原文；推测与事实分开看。"),
             line(text, "#374151", 13f),
@@ -569,9 +616,11 @@ class OverlayController(private val ctx: Context) {
     fun hide() {
         // Do not invoke the collapse callback here: it would recreate the idle overlay.
         reviewCancel = null
-        root?.let { r -> runCatching { wm.removeView(r) } }
-        root = null; bubble = null; panel = null; contentBox = null; dangerDot = null; expanded = false
         resetForNewConversation()
+        panelRoot?.let { r -> runCatching { wm.removeView(r) } }
+        root?.let { r -> runCatching { wm.removeView(r) } }
+        root = null; bubble = null; dangerDot = null
+        panelRoot = null; panel = null; contentBox = null; panelLp = null; expanded = false
         onHidden?.invoke()
     }
 
@@ -583,7 +632,7 @@ class OverlayController(private val ctx: Context) {
     }
 
     private fun render(a: Analysis, generating: Boolean) {
-        ensureRoot(); bubble?.alpha = 1f
+        ensureRoot(); ensurePanel(); bubble?.alpha = 1f
         panel?.background = card(18, panelBg(), stroke = true) // re-apply in case opacity changed
         val views = ArrayList<View>()
 
@@ -782,6 +831,10 @@ class OverlayController(private val ctx: Context) {
     }
 
     companion object {
+        private const val BUBBLE_DP = 52
+        private const val PANEL_WIDTH_DP = 316
+        private const val LONG_PRESS_MS = 500L
+
         private val INTENT = mapOf(
             "confirm_you_care" to "确认你在不在乎", "vent_anger" to "在发泄情绪",
             "request_action" to "要你办事", "seek_explanation" to "要个解释",

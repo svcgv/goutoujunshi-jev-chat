@@ -38,7 +38,7 @@ import kotlin.math.roundToInt
  *
  * Design goals: let the chat show through (adjustable opacity), keep the signal
  * scannable (danger badge + intent headline + reply cards), and stay out of the
- * way (draggable bubble that snaps to the edge and remembers its position).
+ * way (freely draggable bubble that stays where dropped and remembers its position).
  */
 class OverlayController(private val ctx: Context) {
 
@@ -116,8 +116,9 @@ class OverlayController(private val ctx: Context) {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = if (prefs.bubbleX in 0..(screenW - dp(52))) prefs.bubbleX else dp(8)
-            y = if (prefs.bubbleY >= 0) prefs.bubbleY else dp(150)
+            val position = BubblePosition.clamp(prefs.bubbleX.takeIf { it >= 0 } ?: dp(8),
+                prefs.bubbleY.takeIf { it >= 0 } ?: dp(150), screenW, screenH, dp(52), dp(8))
+            x = position.first; y = position.second
         }
         lp = params
 
@@ -208,7 +209,7 @@ class OverlayController(private val ctx: Context) {
 
     private fun attachBubbleTouch(v: View, params: WindowManager.LayoutParams) {
         var startX = 0; var startY = 0; var touchX = 0f; var touchY = 0f
-        var moved = false; var downTime = 0L; var longFired = false
+        var moved = false; var longFired = false
         val longPress = Runnable {
             if (!moved) { longFired = true; showBubbleMenu() }
         }
@@ -216,31 +217,49 @@ class OverlayController(private val ctx: Context) {
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> {
                     startX = params.x; startY = params.y; touchX = e.rawX; touchY = e.rawY
-                    moved = false; longFired = false; downTime = System.currentTimeMillis()
+                    moved = false; longFired = false
                     v.postDelayed(longPress, 500); true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (e.rawX - touchX).toInt(); val dy = (e.rawY - touchY).toInt()
                     if (abs(dx) > dp(6) || abs(dy) > dp(6)) moved = true
-                    // Keep a margin from both side edges: the extreme edge is MIUI's
-                    // back-gesture zone, which steals touches and makes the bubble
-                    // "stuck". Free positioning (no forced edge snap) also avoids it.
-                    params.x = (startX + dx).coerceIn(dp(8), screenW - dp(60))
-                    params.y = (startY + dy).coerceIn(dp(24), screenH - dp(120))
+                    if (moved) {
+                        v.removeCallbacks(longPress)
+                        if (expanded) {
+                            reviewCancel?.invoke(); reviewCancel = null
+                            expanded = false; panel?.visibility = View.GONE
+                            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        }
+                        val pos = BubblePosition.clamp(startX + dx, startY + dy, screenW, screenH, dp(52), dp(8))
+                        params.x = pos.first; params.y = pos.second
+                    }
                     root?.let { runCatching { wm.updateViewLayout(it, params) } }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
                     v.removeCallbacks(longPress)
-                    if (longFired) { true }
-                    else if (moved) {
-                        prefs.bubbleX = params.x; prefs.bubbleY = params.y; true  // stays where dropped
-                    } else { toggle(); true }
+                    if (moved) {
+                        saveBubblePosition(params); true
+                    } else if (longFired) true else { toggle(); true }
                 }
-                MotionEvent.ACTION_CANCEL -> { v.removeCallbacks(longPress); true }
+                MotionEvent.ACTION_CANCEL -> { v.removeCallbacks(longPress); if (moved) saveBubblePosition(params); true }
                 else -> false
             }
         }
+    }
+
+    private fun saveBubblePosition(params: WindowManager.LayoutParams) {
+        collapsedX = params.x; collapsedY = params.y
+        prefs.bubbleX = params.x; prefs.bubbleY = params.y
+    }
+
+    fun reposition() {
+        val params = lp ?: return
+        if (expanded) toggle()
+        val pos = BubblePosition.clamp(prefs.bubbleX, prefs.bubbleY, screenW, screenH, dp(52), dp(8))
+        params.x = pos.first; params.y = pos.second
+        saveBubblePosition(params)
+        root?.let { runCatching { wm.updateViewLayout(it, params) } }
     }
 
     private fun showBubbleMenu() {
@@ -295,7 +314,8 @@ class OverlayController(private val ctx: Context) {
             reviewCancel = null
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
             panel?.visibility = View.GONE
-            params.x = collapsedX; params.y = collapsedY  // bubble returns to where it was
+            val pos = BubblePosition.clamp(collapsedX, collapsedY, screenW, screenH, dp(52), dp(8))
+            params.x = pos.first; params.y = pos.second
         }
         android.util.Log.d("JEVASSIST", "overlay: toggle expanded=$expanded x=${params.x} y=${params.y} saved=($collapsedX,$collapsedY)")
         root?.let { runCatching { wm.updateViewLayout(it, params) } }

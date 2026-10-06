@@ -13,6 +13,9 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.CheckBox
+import android.widget.Spinner
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -20,9 +23,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import com.jev.probe.core.kb.Contact
 import com.jev.probe.core.Analysis
 import com.jev.probe.core.ChatSnapshot
-import com.jev.probe.core.Msg
+import com.jev.probe.core.ReviewedTranscript
 import com.jev.probe.core.GoutouGuidance
 import com.jev.probe.core.Prefs
 import com.jev.probe.core.RankedReply
@@ -61,6 +65,13 @@ class OverlayController(private val ctx: Context) {
     var onSaveContact: (() -> Unit)? = null
 
     /** Bubble menu → one manual screenshot + OCR of whatever app is open. */
+    var onProjectionCapture: (() -> Unit)? = null
+    var onImportScreenshot: (() -> Unit)? = null
+    var onShowHistory: (() -> Unit)? = null
+    private var bindingSummary = "未绑定对象 · 不加载历史"
+
+    fun setBindingSummary(value: String) { bindingSummary = value }
+
     var onOcrCapture: (() -> Unit)? = null
 
     /** How much knowledge context the last analysis actually used. */
@@ -225,6 +236,7 @@ class OverlayController(private val ctx: Context) {
                     if (abs(dx) > dp(6) || abs(dy) > dp(6)) moved = true
                     if (moved) {
                         v.removeCallbacks(longPress)
+                        // Dragging the bubble collapses the panel without restoring an old anchor.
                         if (expanded) {
                             reviewCancel?.invoke(); reviewCancel = null
                             expanded = false; panel?.visibility = View.GONE
@@ -239,7 +251,7 @@ class OverlayController(private val ctx: Context) {
                 MotionEvent.ACTION_UP -> {
                     v.removeCallbacks(longPress)
                     if (moved) {
-                        saveBubblePosition(params); true
+                        saveBubblePosition(params); true  // stays where dropped, even after a long press
                     } else if (longFired) true else { toggle(); true }
                 }
                 MotionEvent.ACTION_CANCEL -> { v.removeCallbacks(longPress); if (moved) saveBubblePosition(params); true }
@@ -263,28 +275,19 @@ class OverlayController(private val ctx: Context) {
     }
 
     private fun showBubbleMenu() {
-        val menu = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            background = card(12, panelBg(), stroke = true)
-            elevation = dp(8).toFloat()
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-            layoutParams = FrameLayout.LayoutParams(dp(196), ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(56) }
-        }
-        menu.addView(menuItem("截屏识别一次") { root?.removeView(menu); onOcrCapture?.invoke() })
-        menu.addView(menuItem("把当前会话存为联系人") { onSaveContact?.invoke(); root?.removeView(menu) })
-        menu.addView(menuItem("关系走势 K 线") {
-            root?.removeView(menu)
-            ctx.startActivity(Intent(ctx, KlineActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        })
-        menu.addView(menuItem("打开设置") { openSettings(); root?.removeView(menu) })
-        menu.addView(menuItem("隐藏助手（本次）") { hide() })
-        menu.addView(menuItem("取消") { root?.removeView(menu) })
-        root?.addView(menu)
-    }
-
-    private fun menuItem(label: String, onClick: () -> Unit) = TextView(ctx).apply {
-        text = label; setTextColor(Color.parseColor("#111827")); textSize = 14f
-        setPadding(dp(12), dp(10), dp(12), dp(10)); setOnClickListener { onClick() }
+        val cancel = reviewCancel
+        reviewCancel = null
+        cancel?.invoke()
+        releaseFocus()
+        setContent(listOf(hint(bindingSummary),
+            bigButton("截屏识别一次") { onOcrCapture?.invoke() },
+            bigButton("绑定对象 / 记忆设置") { onSaveContact?.invoke() },
+            bigButton("系统授权截屏") { onProjectionCapture?.invoke() },
+            bigButton("导入聊天截图") { onImportScreenshot?.invoke() },
+            bigButton("查看对象历史") { onShowHistory?.invoke() },
+            bigButton("打开设置") { openSettings() },
+            bigButton("隐藏助手（本次）") { hide() }))
+        if (!expanded) toggle()
     }
 
     private fun openSettings() {
@@ -331,8 +334,52 @@ class OverlayController(private val ctx: Context) {
         // stale conversation) — either way an empty panel must never stay
         // literally blank.
         if (lastJudgment == null || contentBox?.childCount == 0) {
-            setContent(listOf(bigButton("分析当前对话") { onManualAnalyze?.invoke() }))
+            setContent(listOf(hint(title?.let { "当前窗口：$it" } ?: "请进入聊天窗口"), hint(bindingSummary),
+                bigButton("绑定对象 / 记忆设置") { onSaveContact?.invoke() },
+                bigButton("分析当前对话") { onManualAnalyze?.invoke() },
+                bigButton("系统授权截屏") { onProjectionCapture?.invoke() },
+                bigButton("导入聊天截图") { onImportScreenshot?.invoke() },
+                bigButton("查看对象历史") { onShowHistory?.invoke() }))
         }
+    }
+
+    fun showBinding(title: String, contacts: List<Contact>, selectedId: String?, remember: Boolean,
+                    onSave: (String?, String, Boolean) -> Unit, onUnbind: () -> Unit,
+                    onClear: () -> Unit, onCancel: () -> Unit) {
+        ensureRoot()
+        val picker = Spinner(ctx).apply {
+            adapter = ArrayAdapter(ctx, android.R.layout.simple_spinner_dropdown_item,
+                listOf("新建对象") + contacts.map { it.name })
+            setSelection(contacts.indexOfFirst { it.id == selectedId }.let { if (it < 0) 0 else it + 1 })
+        }
+        val name = EditText(ctx).apply { hint = "新对象称呼／无法识别时的本轮会话称呼"; setText(title) }
+        val consent = CheckBox(ctx).apply { text = "保存核对后的消息并在分析时使用历史（本机存储）"; isChecked = remember }
+        val identity = CheckBox(ctx).apply { text = "确认这是同一对象的一对一会话；同名会话请先在聊天软件设唯一备注" }
+        reviewCancel = onCancel
+        setContent(listOf(line("绑定：$title", "#24382d", 16f, true), picker, name, consent, identity,
+            hint("仅采集已核对的可见消息；不读取完整微信记录。跨应用只有手动选同一对象才共享档案。"),
+            bigButton("确认绑定") {
+                if (!identity.isChecked || (picker.selectedItemPosition == 0 && name.text.isBlank())) {
+                    toast("请填写称呼并确认会话身份")
+                } else {
+                    finishReview(); releaseFocus()
+                    val selected = contacts.getOrNull(picker.selectedItemPosition - 1)
+                    onSave(selected?.id, name.text.toString().trim().ifBlank { selected?.name.orEmpty() }, consent.isChecked)
+                }
+            }, bigButton("解除当前绑定") { finishReview(); releaseFocus(); onUnbind() },
+            bigButton("清空此对象历史（需确认）") {
+                setContent(listOf(hint("删除此对象已保存的聊天历史，不能恢复；绑定与档案保留。"),
+                    bigButton("确认清空") { finishReview(); releaseFocus(); onClear() },
+                    bigButton("取消") { finishReview(); releaseFocus(); onCancel() }))
+            }, bigButton("取消") { finishReview(); releaseFocus(); onCancel() }))
+        if (!expanded) toggle()
+        lp?.let { it.flags = it.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+            root?.let { view -> runCatching { wm.updateViewLayout(view, lp) } } }
+    }
+
+    private fun releaseFocus() {
+        lp?.let { it.flags = it.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            root?.let { view -> runCatching { wm.updateViewLayout(view, lp) } } }
     }
 
     /** OCR text is editable because both wording and speaker attribution can be wrong. */
@@ -342,7 +389,7 @@ class OverlayController(private val ctx: Context) {
         reviewCancel = onCancel
         val editor = EditText(ctx).apply {
             setText(snapshot.messages.joinToString("\n") {
-                (if (it.side == "me") "我：" else "对方：") + it.text
+                (when (it.side) { "me" -> "我："; "other" -> "对方："; else -> "待确认：" }) + it.text
             })
             setTextColor(Color.parseColor("#24382d"))
             textSize = 14f
@@ -353,15 +400,8 @@ class OverlayController(private val ctx: Context) {
             background = card(10, Color.WHITE, stroke = true)
         }
         val confirm = bigButton("确认原文并分析") {
-            val lines = editor.text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }
-            val messages = lines.mapNotNull { line ->
-                when {
-                    line.startsWith("我：") -> Msg("me", line.removePrefix("我：").trim())
-                    line.startsWith("对方：") -> Msg("other", line.removePrefix("对方：").trim())
-                    else -> null
-                }
-            }
-            if (messages.size != lines.size || messages.isEmpty() || messages.any { it.text.isBlank() }) {
+            val messages = runCatching { ReviewedTranscript.parse(editor.text.toString()) }.getOrNull()
+            if (messages == null) {
                 toast("每行请以“我：”或“对方：”开头，并核对内容")
             } else {
                 // Keep cancellation while focus is returning to the chat window.
@@ -374,7 +414,8 @@ class OverlayController(private val ctx: Context) {
             }
         }
         setContent(listOf(line("核对本轮对话", "#24382d", 16f, true),
-            hint("识别结果可能有错。修改每行的“我／对方”和正文，确认后才调用分析模型。"),
+            hint(bindingSummary),
+            hint("只支持一对一聊天。请核对每行的我／对方和正文，确认后按记忆设置保存，再调用模型。"),
             editor, confirm))
         if (!expanded) toggle()
         lp?.let { params ->
@@ -397,6 +438,7 @@ class OverlayController(private val ctx: Context) {
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
             root?.let { runCatching { wm.updateViewLayout(it, params) } }
         }
+        bindingSummary = "未绑定对象 · 不加载历史"
         lastJudgment = null
         lastFill = null
         noteText = null
@@ -451,7 +493,11 @@ class OverlayController(private val ctx: Context) {
         ensureRoot(); bubble?.alpha = 1f
         setContent(listOf(
             line("出错了", "#DC2626", 14f, true),
-            hint(msg)))
+            hint(msg),
+            bigButton("重新识别") { onOcrCapture?.invoke() },
+            bigButton("系统授权截屏") { onProjectionCapture?.invoke() },
+            bigButton("导入聊天截图") { onImportScreenshot?.invoke() }))
+        if (!expanded) toggle()
     }
 
     fun showJudgment(a: Analysis) {
@@ -500,6 +546,7 @@ class OverlayController(private val ctx: Context) {
         val views = ArrayList<View>()
 
         // What context this read was based on (knowledge base / remembered history).
+        views.add(hint(bindingSummary))
         views.add(hint(
             if (ctxNotes == 0 && ctxHistory == 0) "未用知识库"
             else "知识库 $ctxNotes 条 · 历史 $ctxHistory 条"))

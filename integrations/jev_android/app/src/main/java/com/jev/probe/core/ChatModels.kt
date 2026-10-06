@@ -28,7 +28,8 @@ data class ChatSnapshot(
     val title: String?,
     val messages: List<Msg>,
     val bubbleRects: List<BubbleRect> = emptyList(),
-    val note: String? = null
+    val note: String? = null,
+    val isGroup: Boolean = false
 ) {
     val latestFrom: String? get() = messages.lastOrNull()?.side
 

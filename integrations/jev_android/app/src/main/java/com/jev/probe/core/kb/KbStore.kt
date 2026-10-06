@@ -21,12 +21,9 @@ data class KbCounts(val notes: Int, val contacts: Int, val logLines: Int)
  * a JSON document behind. Serialization is hand-written org.json (no Gson/Moshi
  * dependency). Chat text never reaches logcat — only counts and lengths.
  */
-class KbStore private constructor(context: Context) {
-
-    private val app = context.applicationContext
+class KbStore internal constructor(private val root: File, private val report: (String) -> Unit = {}) {
     private val lock = Any()
 
-    private val root: File get() = File(app.filesDir, "kb")
     private val notesFile: File get() = File(root, "notes.json")
     private val contactsFile: File get() = File(root, "contacts.json")
     private fun logFile(contactId: String) = File(File(root, "logs"), "$contactId.json")
@@ -88,6 +85,10 @@ class KbStore private constructor(context: Context) {
             ok = writeAtomic(contactsFile, contactsJson(list))
             if (!ok) contactsCache = null
         }
+        val boundRows = bindings()
+        if (boundRows.any { it.contactId == id }) {
+            ok = writeAtomic(bindingsFile, ConversationBindings.encode(boundRows.filterNot { it.contactId == id }).toString()) && ok
+        }
         logCache.remove(id)
         lastScreenCache.remove(id)
         runCatching { logFile(id).delete() }
@@ -111,7 +112,8 @@ class KbStore private constructor(context: Context) {
                 normalizeName(c.name) == want || c.aliases.any { normalizeName(it) == want }
             }
             if (hits.isEmpty()) return null
-            return hits.firstOrNull { app.isNotBlank() && it.apps.contains(app) } ?: hits.first()
+            return hits.filter { app.isNotBlank() && it.apps.contains(app) }.singleOrNull()
+                ?: hits.singleOrNull()
         }
     }
 
@@ -144,6 +146,53 @@ class KbStore private constructor(context: Context) {
         return "已并入联系人「${existing.name}」"
     }
 
+    // Explicit bindings do not silently inherit old name/alias matches.
+    private val bindingsFile: File get() = File(root, "bindings.json")
+
+    fun bindings(): List<ConversationBinding> = synchronized(lock) {
+        if (!bindingsFile.exists()) emptyList() else try {
+            ConversationBindings.decode(bindingsFile.readText())
+        } catch (_: Exception) { emptyList() }
+    }
+
+    fun binding(title: String?, app: String): ConversationBinding? = synchronized(lock) {
+        ConversationBindings.resolve(bindings(), app, title)?.takeIf { contact(it.contactId) != null }
+    }
+
+    fun bind(binding: ConversationBinding): Boolean = synchronized(lock) {
+        if (binding.app.isBlank() || binding.title.isBlank() || contact(binding.contactId) == null) return false
+        // Never overwrite an unreadable bindings file.
+        if (bindingsFile.exists()) try { ConversationBindings.decode(bindingsFile.readText()) }
+            catch (_: Exception) { return false }
+        val rows = bindings().filterNot { it.app == binding.app && it.title == binding.title.trim() }
+        writeAtomic(bindingsFile, ConversationBindings.encode(rows + binding.copy(title = binding.title.trim())).toString())
+    }
+
+    fun unbind(title: String, app: String): Boolean = synchronized(lock) {
+        if (bindingsFile.exists()) try { ConversationBindings.decode(bindingsFile.readText()) }
+            catch (_: Exception) { return false }
+        writeAtomic(bindingsFile, ConversationBindings.encode(bindings().filterNot {
+            it.app == app && it.title == title.trim()
+        }).toString())
+    }
+
+    fun clearHistory(contactId: String): Boolean = synchronized(lock) {
+        logCache.remove(contactId)
+        lastScreenCache.remove(contactId)
+        val log = logFile(contactId)
+        val screen = screenFile(contactId)
+        (!log.exists() || log.delete()) && (!screen.exists() || screen.delete())
+    }
+
+    /** Only call after transcript and window identity have both been confirmed. */
+    fun rememberReviewed(title: String?, app: String, messages: List<com.jev.probe.core.Msg>): Boolean {
+        if (messages.any { it.side !in listOf("me", "other") || it.text.isBlank() }) return false
+        val binding = binding(title, app) ?: return true
+        if (!binding.remember) return true
+        val now = System.currentTimeMillis()
+        return appendLog(binding.contactId, messages.map { LogEntry(it.side, it.text, now, app) }, allowDisjoint = true)
+    }
+
     // ---------------------------------------------------------------- history
 
     /**
@@ -169,7 +218,7 @@ class KbStore private constructor(context: Context) {
      *        deliberate single-entry injection that is NOT a screen read, which
      *        is appended as-is.
      */
-    fun appendLog(contactId: String, entries: List<LogEntry>, screenBatch: Boolean = true): Boolean {
+    fun appendLog(contactId: String, entries: List<LogEntry>, screenBatch: Boolean = true, allowDisjoint: Boolean = false): Boolean {
         if (entries.isEmpty()) return true
         synchronized(lock) {
             val screen = entries.filter { it.text.isNotBlank() }
@@ -199,8 +248,8 @@ class KbStore private constructor(context: Context) {
                 k > 0 -> screen.drop(k)
                 // Nothing in common with the screen we last wrote → we are looking
                 // at older messages, not newer ones. Leave the log alone.
-                prev.isNotEmpty() && keys.none { it in prev } -> {
-                    Log.d(TAG, "appendLog contact=$contactId skipped: scrolled off the last screen")
+                !allowDisjoint && prev.isNotEmpty() && keys.none { it in prev } -> {
+                    report("appendLog contact=$contactId skipped: scrolled off the last screen")
                     return true
                 }
                 else -> screen
@@ -215,7 +264,7 @@ class KbStore private constructor(context: Context) {
             val ok = writeAtomic(logFile(contactId), logJson(list))
             if (!ok) logCache.remove(contactId)
             if (ok && screenBatch) saveLastScreen(contactId, keys)
-            Log.d(TAG, "appendLog contact=$contactId added=${tail.size} overlap=$k total=${list.size} ok=$ok")
+            report("appendLog contact=$contactId added=${tail.size} overlap=$k total=${list.size} ok=$ok")
             return ok
         }
     }
@@ -285,7 +334,7 @@ class KbStore private constructor(context: Context) {
         logCache.clear()
         lastScreenCache.clear()
         runCatching { root.deleteRecursively() }
-        Log.i(TAG, "kb cleared")
+        report("kb cleared")
         Unit
     }
 
@@ -426,7 +475,7 @@ class KbStore private constructor(context: Context) {
             val backup = File(f.parentFile, "${f.name}.corrupt.${System.currentTimeMillis()}")
             val kept = runCatching { f.renameTo(backup) }.getOrDefault(false)
             if (kept) unreadable.remove(f.absolutePath) else unreadable.add(f.absolutePath)
-            Log.w(TAG, "unreadable ${f.name}: ${e.javaClass.simpleName} preserved=$kept")
+            report("unreadable ${f.name}: ${e.javaClass.simpleName} preserved=$kept")
             Loaded(null, kept)
         }
     }
@@ -441,7 +490,7 @@ class KbStore private constructor(context: Context) {
      */
     private fun writeAtomic(f: File, text: String): Boolean {
         if (f.absolutePath in unreadable) {
-            Log.w(TAG, "refusing to overwrite unparsable ${f.name}")
+            report("refusing to overwrite unparsable ${f.name}")
             return false
         }
         val tmp = File(f.parentFile, f.name + ".tmp")
@@ -451,13 +500,13 @@ class KbStore private constructor(context: Context) {
             if (tmp.renameTo(f)) return true
             // Same-directory rename should not fail. If it somehow does, an
             // in-place overwrite is the only way left — not atomic, so say so.
-            Log.w(TAG, "rename failed, overwriting ${f.name} in place")
+            report("rename failed, overwriting ${f.name} in place")
             f.writeText(text, Charsets.UTF_8)
             runCatching { tmp.delete() }
             true
         } catch (e: Exception) {
             runCatching { tmp.delete() }
-            Log.w(TAG, "write failed ${f.name}: ${e.javaClass.simpleName}")
+            report("write failed ${f.name}: ${e.javaClass.simpleName}")
             false
         }
     }
@@ -482,7 +531,7 @@ class KbStore private constructor(context: Context) {
 
         fun get(context: Context): KbStore =
             instance ?: synchronized(this) {
-                instance ?: KbStore(context).also { instance = it }
+                instance ?: KbStore(File(context.applicationContext.filesDir, "kb")) { Log.d(TAG, it) }.also { instance = it }
             }
 
         fun newId(): String = java.util.UUID.randomUUID().toString().substring(0, 12)

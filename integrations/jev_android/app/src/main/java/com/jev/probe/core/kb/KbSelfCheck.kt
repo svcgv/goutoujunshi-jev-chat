@@ -72,7 +72,9 @@ object KbSelfCheck {
                 Msg("me", "自检消息二：这条也够长")
             ))
 
-            // 1. contact hit via full-width alias + member-count stripping
+            store.bind(ConversationBinding("com.jev.probe", TITLE, contactId, remember = true))
+            store.rememberReviewed(TITLE, "com.jev.probe", snapshot.messages)
+            // 1. contact hit via explicit binding
             val ctx1 = ContextBuilder.build(context, snapshot, "com.jev.probe", prefs)
             if (ctx1.contact?.id != contactId)
                 failures.add("联系人未命中（标题 ${TITLE} 应匹配别名 ${ALIAS}）")
@@ -112,6 +114,7 @@ object KbSelfCheck {
             failures.add("异常：${e.javaClass.simpleName} ${e.message ?: ""}")
         } finally {
             runCatching { store.deleteNote(noteId) }
+            runCatching { store.unbind(TITLE, "com.jev.probe") }
             runCatching { store.deleteContact(contactId) }
             runCatching {
                 context.getSharedPreferences(SCRATCH_PREFS, Context.MODE_PRIVATE)

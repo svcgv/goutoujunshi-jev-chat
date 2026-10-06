@@ -75,4 +75,4 @@ adb reverse tcp:8317 tcp:8317
 ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon
 ```
 
-APK 输出到 `app/build/outputs/apk/debug/app-debug.apk`。本 fork 的源码功能不能通过下载上游旧 APK 获得。新增测试覆盖兼容请求字段、模拟代理 HTTP 请求、JSON 证据解析、输出完整性、API 地址及同源密钥限制；真机、真实代理和实际模型仍需单独验收。
+APK 输出到 `app/build/outputs/apk/debug/goutoujunshi-jev-chat-0.1.8-preview-debug.apk`（文件名自动带上 `versionName`）。本 fork 的源码功能不能通过下载上游旧 APK 获得。新增测试覆盖兼容请求字段、模拟代理 HTTP 请求、JSON 证据解析、输出完整性、API 地址及同源密钥限制；真机、真实代理和实际模型仍需单独验收。

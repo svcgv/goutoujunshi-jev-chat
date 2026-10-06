@@ -1,5 +1,11 @@
+import com.android.build.api.variant.impl.VariantOutputImpl
 import java.io.FileInputStream
 import java.util.Properties
+
+// Single source of truth for the app version. Keep these in sync with the git
+// release tag (e.g. tag v0.1.8-preview -> versionName "0.1.8-preview").
+val appVersionCode = 8
+val appVersionName = "0.1.8-preview"
 
 plugins {
     id("com.android.application")
@@ -24,8 +30,8 @@ android {
         applicationId = "com.goutoujunshi.chat"
         minSdk = 30
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.1.7-preview"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         // ML Kit's bundled Chinese recognizer ships native libs for every ABI.
         // The target phone (and every phone this can run on: minSdk 30) is
@@ -69,6 +75,18 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+}
+
+// Name every APK with its version so builds from different releases never
+// overwrite or get confused with one another.
+androidComponents {
+    onVariants { variant ->
+        variant.outputs.forEach { output ->
+            (output as? VariantOutputImpl)?.outputFileName?.set(
+                "goutoujunshi-jev-chat-$appVersionName-${variant.name}.apk"
+            )
+        }
     }
 }
 

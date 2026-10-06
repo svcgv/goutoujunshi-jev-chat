@@ -33,7 +33,7 @@ Android 策略判断及候选排序支持配置 OpenAI 兼容代理地址，使�
 
 **本次打包版本：`v0.1.7-preview`。** Android APK 包含上述修复；Windows 预览 ZIP 与 Mac 源码 ZIP 同步重新打包，这轮未修改其采集和分析逻辑。请从 [GitHub Releases 下载页](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest)下载对应文件，按同页 `SHA256SUMS.txt` 校验。`v0.1.6-preview` 包含 PR #1，尚未包含这轮修复。Android 的安装、DeepSeek 配置与通用截屏入口见 [Android 使用说明](integrations/jev_android/README.md)。
 
-Android 仍处于预览阶段，微信仍不支持。自动测试覆盖上述逻辑；悬浮窗焦点、不同设备的截图能力和实际模型兼容性仍需真机验收。已发送给模型的请求无法撤回；停用后会取消后续步骤并丢弃旧结果。
+Android 仍处于预览阶段；本 fork 已加入实验性微信一对一采集。自动测试覆盖上述逻辑；悬浮窗焦点、不同设备的截图能力和实际模型兼容性仍需真机验收。已发送给模型的请求无法撤回；停用后会取消后续步骤并丢弃旧结果。
 
 ## Mac、Windows 与 Android 预览包
 
@@ -43,9 +43,9 @@ Android 仍处于预览阶段，微信仍不支持。自动测试覆盖上述逻
 | --- | --- | --- |
 | macOS | [`goutoujunshi-jev-chat-mac.zip`](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-mac.zip) | 源码 ZIP；解压后运行 `安装依赖.command`，再运行 `离线演示.command` 或 `启动.command`。需要 Python 3.12 和 uv，尚无签名 `.app`。 |
 | Windows | [`goutoujunshi-jev-chat-windows-preview.zip`](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-windows-preview.zip) | 可执行目录 ZIP；自动构建通过 |
-| Android | [`goutoujunshi-jev-chat-android-debug.apk`](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-android-debug.apk) | Android 11+ 调试预览包。**上游 APK 不含本 fork 的新采集与绑定功能，请本地构建。**  |
+| Android | [`goutoujunshi-jev-chat-0.1.8-preview-debug.apk`](https://github.com/svcgv/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-0.1.8-preview-debug.apk) | Android 11+ 调试预览包，APK 文件名带版本号。**上游 APK 不含本 fork 的新采集与绑定功能，请本地构建。** |
 
-三端现已接入核对原文、Jev／DeepSeek 策略判断、候选排序、详细分析、口吻改写、关系阶段与目标，以及 K 线示例和聊天 CSV 导入。截图展示的是 Mac 界面，Windows 和 Android 的布局及采集能力仍有差异；Android 微信截图目前不可用。各端的操作与已知限制见 [Windows 使用说明](integrations/jev_windows/README.md)和 [Android 使用说明](integrations/jev_android/README.md)。
+三端现已接入核对原文、Jev／DeepSeek 策略判断、候选排序、详细分析、口吻改写、关系阶段与目标，以及 K 线示例和聊天 CSV 导入。截图展示的是 Mac 界面，Windows 和 Android 的布局及采集能力仍有差异；Android 微信一对一采集为实验性功能，需真机验证。各端的操作与已知限制见 [Windows 使用说明](integrations/jev_windows/README.md)和 [Android 使用说明](integrations/jev_android/README.md)。
 
 ### Android：安装调试 APK
 

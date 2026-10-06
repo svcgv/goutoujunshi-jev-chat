@@ -7,12 +7,14 @@ import com.jev.probe.core.Prefs
 import com.jev.probe.core.RankedReply
 import com.jev.probe.core.GoutouGuidance
 import com.jev.probe.core.kb.ChatContext
+import com.jev.probe.core.skill.SkillDigest
+import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.exp
 
 /** OpenAI-compatible strategy route; official DeepSeek is a preset. Token weights are optional evidence, never success odds. */
-class StrategyClient(private val prefs: Prefs) {
+class StrategyClient(private val prefs: Prefs, private val context: Context? = null) {
     private val strategies = StrategyEvidence.strategies
     private val labels = "ABCDEFG"
 
@@ -28,6 +30,8 @@ class StrategyClient(private val prefs: Prefs) {
                 "包含 strategy（七策略之一）、intent（可能的意图）、confidence（0到1或null）、" +
                 "facts（字符串数组）、unknowns（字符串数组）。证据不足时填 null。策略：$definitions"
             val input = StrategyInput.build(snapshot, relationship, ctx, prefs.contextHistoryCount)
+            val digest = context?.let { SkillDigest.forPrompt(it, snapshot, relationship, ctx, prefs) }.orEmpty()
+            if (digest.isNotBlank()) input.put("knowledge", digest)
             val user = input.toString()
             var evidence = parseEvidence(request(system, user, json = true))
             if (evidence == null) evidence = parseEvidence(request(

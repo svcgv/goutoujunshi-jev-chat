@@ -12,11 +12,11 @@ import com.jev.probe.core.kb.ChatContext
  * Construct with [Prefs] — every route reads its own address / key / model from
  * there, so switching providers in settings takes effect on the next call.
  */
-class JevClient(private val prefs: Prefs) {
+class JevClient(private val prefs: Prefs, context: android.content.Context? = null) {
 
     private val judgeClient = JudgeClient(prefs)
-    private val replyClient = ReplyClient(prefs)
-    private val strategyClient = StrategyClient(prefs)
+    private val replyClient = ReplyClient(prefs, context)
+    private val strategyClient = StrategyClient(prefs, context)
 
     fun details(snapshot: ChatSnapshot, relationship: String, judgment: Analysis, ctx: ChatContext? = null): String =
         replyClient.details(snapshot, relationship, judgment, ctx)

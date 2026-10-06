@@ -155,7 +155,7 @@ open class ChatCaptureService : AccessibilityService() {
             if (snapshot == null || analysis == null || !snapshotIsCurrent(snapshot, pkg)) {
                 overlay?.toast("请先核对并分析当前会话")
             } else submit(token) {
-                val result = try { JevClient(prefs).details(snapshot, prefs.relationship, analysis, ctx) }
+                val result = try { JevClient(prefs, applicationContext).details(snapshot, prefs.relationship, analysis, ctx) }
                              catch (_: Exception) { "详细分析暂不可用，请检查回复模型后重试。" }
                 main.post { if (session.isCurrent(token) && snapshotIsCurrent(snapshot, pkg)) overlay?.showDetails(result) }
             }
@@ -170,7 +170,7 @@ open class ChatCaptureService : AccessibilityService() {
                 analysis.rankedReplies.none { it.text == candidate } || !snapshotIsCurrent(snapshot, pkg)) {
                 overlay?.toast("请先分析当前会话")
             } else submit(token) {
-                val result = try { JevClient(prefs).explain(snapshot, prefs.relationship, analysis, candidate, ctx) }
+                val result = try { JevClient(prefs, applicationContext).explain(snapshot, prefs.relationship, analysis, candidate, ctx) }
                              catch (_: Exception) { "理由与代价暂不可用，请检查回复模型后重试。" }
                 main.post { if (session.isCurrent(token) && snapshotIsCurrent(snapshot, pkg)) overlay?.showDetails(result, "回复理由与代价") }
             }
@@ -187,7 +187,7 @@ open class ChatCaptureService : AccessibilityService() {
             } else {
                 overlay?.toast("正在按你的原话调整口吻…")
                 submit(token) {
-                    val client = JevClient(prefs)
+                    val client = JevClient(prefs, applicationContext)
                     try {
                         val candidates = client.rewrite(snapshot, analysis,
                             analysis.rankedReplies.map { it.text })
@@ -578,7 +578,7 @@ open class ChatCaptureService : AccessibilityService() {
         }
         if (!session.beginAnalysis(token)) return
         overlay?.showLoading(); overlay?.setNote(snapshot.note); overlay?.setSnapshot(snapshot)
-        val client = JevClient(prefs)
+        val client = JevClient(prefs, applicationContext)
         val rel = prefs.relationship
         submit(token) {
             val ctx = try {

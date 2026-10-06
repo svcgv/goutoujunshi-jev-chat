@@ -142,6 +142,15 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
         get() = sp.getBoolean(K_CTX_ENABLED, false)
         set(v) = sp.edit().putBoolean(K_CTX_ENABLED, v).apply()
 
+    /**
+     * Inject short excerpts from the bundled 狗头军师 knowledge base into the
+     * strategy and draft prompts. On-device only; default ON because it ships
+     * with the app and materially improves judgment quality.
+     */
+    var skillKnowledgeEnabled: Boolean
+        get() = sp.getBoolean(K_SKILL_KB, true)
+        set(v) = sp.edit().putBoolean(K_SKILL_KB, v).apply()
+
     /** How many recent history entries to inject. */
     var contextHistoryCount: Int
         get() = sp.getInt(K_CTX_COUNT, 30)
@@ -291,6 +300,7 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
         private const val K_VISION_KEY = "vision_key"
         private const val K_VISION_MODEL = "vision_model"
         private const val K_CTX_ENABLED = "context_enabled"
+        private const val K_SKILL_KB = "skill_knowledge_enabled"
         private const val K_CTX_COUNT = "context_history_count"
         private const val K_AUTO_SUMMARY = "auto_summary"
         private const val K_OCR_ENGINE = "ocr_engine"

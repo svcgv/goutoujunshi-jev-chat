@@ -118,7 +118,7 @@ class SettingsActivity : AppCompatActivity() {
             }
             worker.execute {
                 val demo = ChatSnapshot("连通测试", listOf(Msg("other", "这周有点忙，下周再说吧")))
-                val result = StrategyClient(probe).judge(demo, Prefs.DEFAULT_REL)
+                val result = StrategyClient(probe, applicationContext).judge(demo, Prefs.DEFAULT_REL)
                 main.post { strategyResult.text = result.error ?: "成功 · ${result.strategy} · " +
                     (if (result.strategyWeights.isEmpty()) "模型判断，非成功率" else "已取得策略相对权重") }
             }
@@ -357,6 +357,9 @@ class SettingsActivity : AppCompatActivity() {
         card2.addView(text("关闭时自动 OCR 只亮悬浮球，点分析后核对；手动截屏仍直接打开核对页。", 11f, sub))
 
         // --- 知识库 / 关联上下文（D 阶段） ---
+        val skillRow = toggleRow("注入狗头军师知识库参考", prefs.skillKnowledgeEnabled)
+        card2.addView(skillRow)
+        card2.addView(text("随 App 内置的军师方法摘要，分析时按主题在本机匹配后随提示词发送（不含完整聊天、不联网检索）。关闭后只用内置规则与你的档案。", 11f, sub))
         val ctxRow = toggleRow("记录聊天历史（只存本机，用于关联上下文）", prefs.contextEnabled)
         card2.addView(ctxRow)
         card2.addView(text("总开关关闭时不写入或注入历史。每个会话还须先绑定对象并单独同意记忆；仅核对确认后保存。旧联系人需重新绑定一次。", 11f, sub))
@@ -482,6 +485,7 @@ class SettingsActivity : AppCompatActivity() {
             prefs.ocrFallback = (ocrFallbackRow.tag as? Boolean) ?: true
             prefs.ocrEngine = if (ocrEngineIdx == 1) Prefs.OCR_VISION else Prefs.OCR_MLKIT
             prefs.ocrAutoAnalyze = (ocrAutoRow.tag as? Boolean) ?: false
+            prefs.skillKnowledgeEnabled = (skillRow.tag as? Boolean) ?: true
             prefs.contextEnabled = (ctxRow.tag as? Boolean) ?: false
             prefs.contextHistoryCount =
                 ctxCountEdit.text.toString().trim().toIntOrNull()?.coerceIn(0, 100) ?: 30

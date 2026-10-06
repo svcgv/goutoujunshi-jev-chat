@@ -4,13 +4,13 @@
 
 # Goutoujunshi Jev Chat
 
-**Goutoujunshi beside your chat window: screen reading, analysis, and reply drafts.** This standalone project builds on [Goutoujunshi](https://github.com/shengjidaguai-china/goutoujunshi). The public downloads are a Mac source preview, a Windows preview ZIP, and an Android debug APK. The Android build currently cannot capture WeChat chat screenshots, so WeChat is unsupported. Windows and Android still need device-level validation. You decide whether to send every draft.
+**Goutoujunshi beside your chat window: screen reading, analysis, and reply drafts.** This standalone project builds on [Goutoujunshi](https://github.com/shengjidaguai-china/goutoujunshi). The public downloads are a Mac source preview, a Windows preview ZIP, and an Android debug APK. The Android supports WeChat one-to-one chats; system capture or screenshot import is available when accessibility reading fails. Windows and Android still need device-level validation. You decide whether to send every draft.
 
 If it helps you, [Star the project](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/stargazers) so you can find it again and help others discover it.
 
 ## This fork: Android CLI-Proxy-API support (no Jev required)
 
-Android strategy judgment and candidate ranking can use a configurable OpenAI-compatible Chat Completions proxy and the actual DeepSeek / GPT model IDs exposed by that proxy. Reply generation is configured independently; existing Jev and official DeepSeek routes remain available. See the [Android proxy setup guide (Chinese)](integrations/jev_android/CLI_PROXY_API.md). Upstream release APKs do not contain these local changes. The existing Android WeChat capture limitation is not fixed by this change.
+Android strategy judgment and candidate ranking can use a configurable OpenAI-compatible Chat Completions proxy and the actual DeepSeek / GPT model IDs exposed by that proxy. Reply generation is configured independently; existing Jev and official DeepSeek routes remain available. See the [Android proxy setup guide (Chinese)](integrations/jev_android/CLI_PROXY_API.md). Upstream release APKs do not contain these local changes. This fork adds WeChat one-to-one capture, explicit object binding, reviewed local history, system-capture consent, and screenshot import; device validation is still required.
 
 ## Latest update: Android review, cancellation, and DeepSeek context
 
@@ -33,7 +33,7 @@ The [post-merge main run](https://github.com/shengjidaguai-china/goutoujunshi-je
 
 **Package version: `v0.1.7-preview`.** The Android APK includes these fixes. Windows and Mac packages are rebuilt alongside it; their capture and analysis logic was not changed in this round. Download the files from [GitHub Releases](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest) and verify them against `SHA256SUMS.txt` on the release page. Version `v0.1.6-preview` includes PR #1 but not these fixes. See the [Android guide](integrations/jev_android/README.md) for installation, DeepSeek configuration, and manual screenshot recognition.
 
-Android remains a preview, and WeChat remains unsupported. Automated tests cover the updated logic; overlay focus, device capture support, and actual model compatibility still require device-level validation. Requests already sent to a provider cannot be recalled; disabling cancels subsequent steps and discards stale results.
+Android remains a preview. This fork adds experimental WeChat one-to-one capture and explicit contact binding. Automated tests cover the updated logic; overlay focus, device capture support, and actual model compatibility still require device-level validation. Requests already sent to a provider cannot be recalled; disabling cancels subsequent steps and discards stale results.
 
 ## Mac, Windows, and Android preview packages
 
@@ -43,7 +43,7 @@ Download the file for your platform from [GitHub Releases](https://github.com/sh
 | --- | --- | --- |
 | macOS | [`goutoujunshi-jev-chat-mac.zip`](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-mac.zip) | Source ZIP. Run `安装依赖.command`, then `离线演示.command` or `启动.command`. Requires Python 3.12 and uv; there is no signed `.app`. |
 | Windows | [`goutoujunshi-jev-chat-windows-preview.zip`](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-windows-preview.zip) | Executable-directory ZIP. Automated build passes; Windows device validation is pending. |
-| Android | [`goutoujunshi-jev-chat-android-debug.apk`](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-android-debug.apk) | Android 11+ debug preview. **It currently cannot capture WeChat chat screenshots, so WeChat is unsupported.** Other chat-app paths still need device validation. |
+| Android | [`goutoujunshi-jev-chat-android-debug.apk`](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-android-debug.apk) | Android 11+ debug preview. **The upstream APK does not include this fork’s new capture and binding features.** Other chat-app paths still need device validation. |
 
 All three builds now include transcript review, Jev or DeepSeek strategy judgment, ranked drafts, detailed analysis, style rewrites, relationship stage and goal, and example/CSV candlestick charts. The screenshots below show the Mac interface; layouts and capture capabilities differ by platform. Android still cannot capture WeChat. See the [Windows guide](integrations/jev_windows/README.md) and [Android guide](integrations/jev_android/README.md).
 

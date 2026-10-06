@@ -4,13 +4,13 @@
 
 # 狗头军师 Jev Chat
 
-**聊天窗口旁的狗头军师：读屏、分析、生成回复草稿。** 这是从[狗头军师](https://github.com/shengjidaguai-china/goutoujunshi)延伸出来的独立项目。目前公开提供 Mac 源码预览包、Windows 预览 ZIP 和 Android 调试 APK。Android 版目前无法截取微信聊天画面，暂不支持微信；Windows 和 Android 仍需实机测试。发送始终由用户决定。
+**聊天窗口旁的狗头军师：读屏、分析、生成回复草稿。** 这是从[狗头军师](https://github.com/shengjidaguai-china/goutoujunshi)延伸出来的独立项目。目前公开提供 Mac 源码预览包、Windows 预览 ZIP 和 Android 调试 APK。Android 版支持微信一对一聊天；无法读取时可用系统授权截屏或导入截图；Windows 和 Android 仍需实机测试。发送始终由用户决定。
 
 如果这套聊天副驾对你有用，可以给[项目点一个 Star](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/stargazers)，方便以后找到，也让更多有相同需求的人看到它。
 
 ## 本 fork：Android 使用 CLI-Proxy-API（无需 Jev）
 
-Android 策略判断及候选排序支持配置 OpenAI 兼容代理地址，使用代理实际提供的 DeepSeek / GPT 模型 ID；回复模型独立配置。保留 Jev 和 DeepSeek 官方路线。详见 [Android 代理配置](integrations/jev_android/CLI_PROXY_API.md)。这是本地源码修改，文中上游 Release 的 APK 不包含此功能；需自行构建。微信截图采集限制仍未解决。
+Android 策略判断及候选排序支持配置 OpenAI 兼容代理地址，使用代理实际提供的 DeepSeek / GPT 模型 ID；回复模型独立配置。保留 Jev 和 DeepSeek 官方路线。详见 [Android 代理配置](integrations/jev_android/CLI_PROXY_API.md)。这是本地源码修改，文中上游 Release 的 APK 不包含此功能；需自行构建。微信一对一采集已接入，但仍需真机验证。对象绑定、核对后记忆和悬浮球说明见 [微信与对象记忆](integrations/jev_android/WECHAT_AND_MEMORY.md)。
 
 ## 最近更新：Android 核对、取消任务与 DeepSeek 上下文
 
@@ -43,13 +43,13 @@ Android 仍处于预览阶段，微信仍不支持。自动测试覆盖上述逻
 | --- | --- | --- |
 | macOS | [`goutoujunshi-jev-chat-mac.zip`](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-mac.zip) | 源码 ZIP；解压后运行 `安装依赖.command`，再运行 `离线演示.command` 或 `启动.command`。需要 Python 3.12 和 uv，尚无签名 `.app`。 |
 | Windows | [`goutoujunshi-jev-chat-windows-preview.zip`](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-windows-preview.zip) | 可执行目录 ZIP；自动构建通过 |
-| Android | [`goutoujunshi-jev-chat-android-debug.apk`](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-android-debug.apk) | Android 11+ 调试预览包。**目前无法截取微信聊天画面，暂不支持微信。**  |
+| Android | [`goutoujunshi-jev-chat-android-debug.apk`](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/releases/latest/download/goutoujunshi-jev-chat-android-debug.apk) | Android 11+ 调试预览包。**上游 APK 不含本 fork 的新采集与绑定功能，请本地构建。**  |
 
 三端现已接入核对原文、Jev／DeepSeek 策略判断、候选排序、详细分析、口吻改写、关系阶段与目标，以及 K 线示例和聊天 CSV 导入。截图展示的是 Mac 界面，Windows 和 Android 的布局及采集能力仍有差异；Android 微信截图目前不可用。各端的操作与已知限制见 [Windows 使用说明](integrations/jev_windows/README.md)和 [Android 使用说明](integrations/jev_android/README.md)。
 
 ### Android：安装调试 APK
 
-在 Android 11 或更新版本上下载 APK，允许系统安装此来源的应用后安装。旧版调试 APK 若因签名不同无法覆盖安装，需先卸载旧包；卸载会清除本机应用设置。打开应用，选择 Jev 或 DeepSeek 策略判断，配置回复模型；截图识图可选本地 ML Kit 或视觉模型（DeepSeek Flash、OpenRouter 等）。按界面提示授予无障碍、悬浮窗权限；首次安装时助手和自动分析默认关闭，需要主动开启。识别后先核对原文与双方身份，再确认分析。**当前 Android 预览版无法截取微信聊天画面，所以微信暂不支持。** 请勿把 Mac 版微信旁的截图理解为 Android 效果；QQ、X、飞书等路径也仍需在对应设备上验证。应用只生成草稿，发送由你决定。
+在 Android 11 或更新版本上下载 APK，允许系统安装此来源的应用后安装。旧版调试 APK 若因签名不同无法覆盖安装，需先卸载旧包；卸载会清除本机应用设置。打开应用，选择 Jev 或 DeepSeek 策略判断，配置回复模型；截图识图可选本地 ML Kit 或视觉模型（DeepSeek Flash、OpenRouter 等）。按界面提示授予无障碍、悬浮窗权限；首次安装时助手和自动分析默认关闭，需要主动开启。识别后先核对原文与双方身份，再确认分析。**Android 支持微信一对一聊天；若无障碍读取失败，可从悬浮助手发起系统授权截屏或导入普通聊天截图。** 请勿把 Mac 版微信旁的截图理解为 Android 效果；QQ、X、飞书等路径也仍需在对应设备上验证。应用只生成草稿，发送由你决定。
 
 ### Windows：解压 ZIP
 

@@ -351,7 +351,7 @@ class SettingsActivity : AppCompatActivity() {
             "DeepSeek Flash 可用于图片识别。", 11f, sub))
         val ocrFallbackRow = toggleRow("树读不到正文时用 OCR 兜底", prefs.ocrFallback)
         card2.addView(ocrFallbackRow)
-        card2.addView(text("可见聊天画面的文字可用本地 OCR 识别；当前 Android 预览版无法截取微信聊天画面，暂不支持微信。", 11f, sub))
+        card2.addView(text("微信可从悬浮助手手动识别；失败时使用系统授权截屏或导入截图。仅支持一对一，系统安全窗口不可绕过。", 11f, sub))
         val ocrAutoRow = toggleRow("OCR 模式自动分析", prefs.ocrAutoAnalyze)
         card2.addView(ocrAutoRow)
         card2.addView(text("关闭时自动 OCR 只亮悬浮球，点分析后核对；手动截屏仍直接打开核对页。", 11f, sub))
@@ -359,7 +359,7 @@ class SettingsActivity : AppCompatActivity() {
         // --- 知识库 / 关联上下文（D 阶段） ---
         val ctxRow = toggleRow("记录聊天历史（只存本机，用于关联上下文）", prefs.contextEnabled)
         card2.addView(ctxRow)
-        card2.addView(text("关闭时不写任何聊天内容到磁盘；笔记与联系人匹配仍然照常工作。", 11f, sub))
+        card2.addView(text("总开关关闭时不写入或注入历史。每个会话还须先绑定对象并单独同意记忆；仅核对确认后保存。旧联系人需重新绑定一次。", 11f, sub))
         card2.addView(label("注入最近历史条数（0–100）"))
         val ctxCountEdit = edit(prefs.contextHistoryCount.toString(), "30").apply {
             inputType = InputType.TYPE_CLASS_NUMBER

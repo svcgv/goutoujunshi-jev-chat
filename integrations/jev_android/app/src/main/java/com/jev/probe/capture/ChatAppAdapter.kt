@@ -78,7 +78,7 @@ internal fun findTitleInActionBar(
 private val WECHAT_TITLE_EXCLUDE_PUNCT = Regex("""[，。？！、]""")
 
 /** A WeChat group title's "(N)" member-count suffix, half- or full-width. */
-private val WECHAT_GROUP_COUNT_SUFFIX = Regex("""[（(]\d+[）)]""")
+private val WECHAT_GROUP_COUNT_SUFFIX = Regex("""(?:\(|（)\d+(?:\)|）)""")
 
 /**
  * WeChat conversation title (v1.3 fix): a group's pinned announcement or a
@@ -144,6 +144,7 @@ class WeChatAdapter : ChatAppAdapter {
         val bubbles = ArrayList<Triple<Int, Int, String>>() // top, centerX, text
         var firstBubbleTop = Int.MAX_VALUE
         var isChat = false
+        var composer = false
 
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.addLast(root)
@@ -153,6 +154,10 @@ class WeChatAdapter : ChatAppAdapter {
             val node = stack.removeLast()
             val id = node.viewIdResourceName
             val text = node.text?.toString()
+            val bounds = Rect().also { node.getBoundsInScreen(it) }
+            val desc = node.contentDescription?.toString().orEmpty()
+            if (bounds.centerY() > res.displayMetrics.heightPixels * 0.55 &&
+                (node.isEditable || desc in listOf("切换到按住说话", "切换到键盘", "更多功能按钮"))) composer = true
             if (id == BUBBLE_ID) {
                 isChat = true
                 if (!text.isNullOrBlank()) {
@@ -165,12 +170,13 @@ class WeChatAdapter : ChatAppAdapter {
         }
         val title = findWeChatTitle(root, firstBubbleTop, width, res)
         // In a chat but nothing readable → empty snapshot, the OCR fallback cue.
-        if (bubbles.isEmpty()) return if (isChat) ChatSnapshot(title, emptyList()) else null
+        val group = title?.let { Regex("(?:\\(|\\uFF08)\\d+(?:\\)|\\uFF09)$").containsMatchIn(it) } == true
+        if (bubbles.isEmpty()) return if (isChat || composer) ChatSnapshot(title, emptyList(), isGroup = group) else null
         bubbles.sortBy { it.first }
         val msgs = bubbles.map { (_, cx, text) ->
             Msg(if (cx > width / 2) "me" else "other", text)
         }
-        return ChatSnapshot(title, msgs)
+        return ChatSnapshot(title, msgs, isGroup = group)
     }
 
     companion object {

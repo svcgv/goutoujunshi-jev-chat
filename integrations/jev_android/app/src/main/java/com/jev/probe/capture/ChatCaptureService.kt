@@ -1,6 +1,10 @@
 package com.jev.probe.capture
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
+import android.content.res.Configuration
+import com.jev.probe.CapturePermissionActivity
+import com.jev.probe.capture.ocr.CaptureHandoff
 import com.jev.probe.core.kb.Contact
 import com.jev.probe.core.kb.ConversationBinding
 import android.graphics.Bitmap
@@ -73,7 +77,7 @@ open class ChatCaptureService : AccessibilityService() {
     private val worker = Executors.newFixedThreadPool(2)
 
     /** Adapted chat apps, keyed by package name. */
-    private val adapters = listOf(QQAdapter(), XAdapter(), FeishuAdapter()).associateBy { it.pkg }
+    private val adapters = listOf(WeChatAdapter(), QQAdapter(), XAdapter(), FeishuAdapter()).associateBy { it.pkg }
 
     /** Submit to the worker, ignoring rejection after the service is torn down
      *  (a stale overlay callback must never crash the process). */
@@ -96,6 +100,9 @@ open class ChatCaptureService : AccessibilityService() {
     private var activePkg: String? = null
 
     /** Manual identity only survives the current capture round, never an app switch. */
+    private var externalCapturePending = false
+    private var waitingExternalBitmap: Bitmap? = null
+    private var manualWindowTitle: String? = null
     private val debounce = Runnable {
         val snapshot = pendingSnapshot
         if (snapshot != null) reviewSnapshot(snapshot, activePkg ?: foregroundPkg ?: "")
@@ -198,6 +205,8 @@ open class ChatCaptureService : AccessibilityService() {
             }
         }
         overlay?.onSaveContact = { showBinding() }
+        overlay?.onProjectionCapture = { startExternalCapture(false) }
+        overlay?.onImportScreenshot = { startExternalCapture(true) }
         overlay?.onShowHistory = onShowHistory@{
             val snapshot = currentSnapshot
             if (snapshot == null || !snapshotIsCurrent(snapshot, activePkg.orEmpty())) {
@@ -235,7 +244,11 @@ open class ChatCaptureService : AccessibilityService() {
         // while rootInActiveWindow may report either our overlay or the chat app
         // underneath. Neither is a real navigation, so review/cancel must remain
         // the sole owners of this panel until the user chooses one.
-        if (shouldIgnoreAccessibilityEvents(session.reviewPending)) return
+        if (externalCapturePending || shouldIgnoreAccessibilityEvents(session.reviewPending)) return
+        if (manualWindowTitle != null && type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            event.packageName?.toString() == activePkg) {
+            cancelWork() // We cannot prove an opaque window is still the same person.
+        }
 
         // Decide "did we leave the chat app" from the REAL active window, not the
         // event's package. The event package can be an IME (e.g. com.tencent.wetype)
@@ -274,6 +287,8 @@ open class ChatCaptureService : AccessibilityService() {
         if (!session.current.isActive() || session.reviewPending) return
         val root = rootInActiveWindow ?: return
         val pkg = root.packageName?.toString()
+        if (manualWindowTitle != null && pkg == activePkg &&
+            adapters[pkg]?.extract(root, resources)?.title.isNullOrBlank()) return
         // Apps with no adapter are never handled automatically (v1.3 revision):
         // the only way in for them is the bubble menu's "截屏识别一次".
         val adapter = adapters[pkg] ?: return
@@ -281,6 +296,11 @@ open class ChatCaptureService : AccessibilityService() {
         val rawSnapshot = adapter.extract(root, resources)
         if (rawSnapshot == null) {
             if (activePkg != null) cancelWork()
+            if (pkg == WECHAT_PACKAGE) {
+                foregroundPkg = pkg
+                overlay?.setBindingSummary("窗口未识别 · 请进入一对一聊天后截屏或导入")
+                overlay?.showIdle(null)
+            }
             return
         }
         if (rawSnapshot.isGroup) { cancelWork(); overlay?.showError("当前版本只支持一对一聊天，不分析群聊"); return }
@@ -295,6 +315,10 @@ open class ChatCaptureService : AccessibilityService() {
             overlay?.resetForNewConversation()
         }
         updateBindingSummary(snapshot, pkg.orEmpty())
+        if (pkg == WECHAT_PACKAGE && snapshot.messages.isEmpty()) {
+            overlay?.showIdle(snapshot.title)
+            return // Screenshot permission is user initiated, never prompted by background events.
+        }
         // In a chat window but the tree holds no text (Feishu draws its bodies,
         // WeChat hides them when the disguise fails) → screenshot + OCR, subject
         // to ScreenCapture's own >=1s throttle and failure backoff.
@@ -366,6 +390,12 @@ open class ChatCaptureService : AccessibilityService() {
     /** Invalidate every callback before clearing UI state or starting another round. */
     private fun cancelWork() {
         session.reset()
+        externalCapturePending = false
+        waitingExternalBitmap?.recycle(); waitingExternalBitmap = null
+        manualWindowTitle = null
+        CaptureHandoff.cancel()
+        overlay?.setHiddenForShot(false)
+        stopService(Intent(this, com.jev.probe.capture.ocr.ProjectionCaptureService::class.java))
         main.removeCallbacksAndMessages(null)
         pendingSnapshot = null
         currentSnapshot = null
@@ -435,6 +465,7 @@ open class ChatCaptureService : AccessibilityService() {
                     overlay?.showError("绑定保存失败，未启用记忆"); return@done
                 }
                 if (remember) prefs.contextEnabled = true
+                if (title.isBlank()) manualWindowTitle = identityTitle
                 currentSnapshot = snapshot.copy(title = identityTitle)
                 activePkg = pkg
                 lastAnalysis = null; lastContext = null; lastAnalyzedSnapshot = null
@@ -454,6 +485,83 @@ open class ChatCaptureService : AccessibilityService() {
                 overlay?.resetForNewConversation(); idle()
             } },
             onCancel = { done { overlay?.resetForNewConversation(); idle() } })
+    }
+
+    private fun startExternalCapture(import: Boolean) {
+        if (!session.current.isActive() || session.reviewPending || externalCapturePending) return
+        val root = rootInActiveWindow ?: return
+        val pkg = root.packageName?.toString().orEmpty()
+        if (pkg != WECHAT_PACKAGE && pkg != "com.tencent.mobileqq") {
+            overlay?.toast("请先进入微信或 QQ 的一对一聊天"); return
+        }
+        val live = adapters[pkg]?.extract(root, resources)
+        if (live?.isGroup == true) { overlay?.showError("暂不支持群聊"); return }
+        val title = live?.title?.takeUnless { isTransientTitle(it) }
+        if (!prefs.isAllowed(title)) { overlay?.showError("此会话不在白名单内"); return }
+        cancelWork()
+        activePkg = pkg
+        currentSnapshot = ChatSnapshot(title, emptyList())
+        val token = session.current
+        externalCapturePending = true
+        overlay?.setHiddenForShot(true)
+        val requestId = CaptureHandoff.begin(allowFrame = {
+            val active = rootInActiveWindow
+            val visible = active?.let { adapters[pkg]?.extract(it, resources) }
+            session.isCurrent(token) && active?.packageName?.toString() == pkg &&
+                visible?.isGroup != true && (title == null || visible?.title == title)
+        }) { bitmap, error ->
+            waitingExternalBitmap = bitmap
+            fun resume(attempt: Int) {
+                if (!session.isCurrent(token)) { bitmap?.recycle(); return }
+                if (bitmap == null) {
+                    externalCapturePending = false
+                    overlay?.setHiddenForShot(false)
+                    overlay?.showError(error ?: "没有获得截图"); return
+                }
+                val active = rootInActiveWindow
+                val actual = active?.packageName?.toString()
+                if (actual != pkg && attempt < 40) {
+                    main.postDelayed({ resume(attempt + 1) }, 100); return
+                }
+                val fresh = active?.let { adapters[pkg]?.extract(it, resources) }
+                if (actual != pkg || fresh?.isGroup == true ||
+                    (title != null && fresh?.title != title)) {
+                    bitmap.recycle(); cancelWork(); overlay?.setHiddenForShot(false)
+                    overlay?.showError("截屏前后会话无法确认，请回到原聊天窗口重试"); return
+                }
+                // Keep the external-flow guard until OCR has finished. Always confirm the
+                // target for imported images (which may depict a different conversation).
+                waitingExternalBitmap = null // OCR callback now owns this bitmap.
+                ocr.scaleX = 1f; ocr.scaleY = 1f; ocr.originX = 0; ocr.originY = 0
+                val region = Rect(0, (bitmap.height * TOP_CROP).toInt(), bitmap.width, (bitmap.height * BOTTOM_CROP).toInt())
+                ocr.recognize(bitmap, region) { lines ->
+                    bitmap.recycle()
+                    if (!session.isCurrent(token)) return@recognize
+                    externalCapturePending = false
+                    overlay?.setHiddenForShot(false)
+                    val now = rootInActiveWindow
+                    val nowSnapshot = now?.let { adapters[pkg]?.extract(it, resources) }
+                    if (now?.packageName?.toString() != pkg || nowSnapshot?.isGroup == true ||
+                        (title != null && nowSnapshot?.title != title)) {
+                        cancelWork(); overlay?.showError("识别时会话发生变化，请重试"); return@recognize
+                    }
+                    val snapshot = ChatSnapshot(title, groupOcrLines(lines), note =
+                        "${if (import) "导入截图" else "系统授权截屏"} · 只支持一对一，请核对截图对象、原文和双方身份")
+                    currentSnapshot = snapshot
+                    activePkg = pkg
+                    if (snapshot.messages.isEmpty()) { overlay?.showError("没有识别到文字；受保护画面无法读取"); return@recognize }
+                    updateBindingSummary(snapshot, pkg)
+                    showBinding { reviewSnapshot(currentSnapshot ?: snapshot, pkg) }
+                }
+            }
+            resume(0)
+        }
+        try {
+            startActivity(Intent(this, CapturePermissionActivity::class.java)
+                .putExtra("requestId", requestId).putExtra("import", import).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {
+            CaptureHandoff.finish(requestId, null, "无法打开系统截屏或导入入口")
+        }
     }
 
     private fun runAnalysis(token: WorkToken = session.current) {
@@ -514,7 +622,7 @@ open class ChatCaptureService : AccessibilityService() {
         val adapter = adapters[pkg] ?: return true // manual OCR in an unadapted app
         val live = adapter.extract(root, resources)
         return ConversationIdentity.matches(pkg, snapshot.title, root.packageName?.toString(),
-            live?.title?.takeUnless { isTransientTitle(it) }, live?.isGroup == true)
+            live?.title?.takeUnless { isTransientTitle(it) }, live?.isGroup == true, manualWindowTitle)
     }
 
     private fun finishAnalysis(token: WorkToken, snapshot: ChatSnapshot, pkg: String, display: () -> Unit) {
@@ -928,6 +1036,12 @@ open class ChatCaptureService : AccessibilityService() {
         cm.setPrimaryClip(android.content.ClipData.newPlainText("jev_reply", text))
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        cancelWork()
+        overlay?.reposition()
+    }
+
     override fun onInterrupt() {}
 
     override fun onDestroy() {
@@ -941,6 +1055,8 @@ open class ChatCaptureService : AccessibilityService() {
         overlay?.onManualAnalyze = null
         overlay?.onSaveContact = null
         overlay?.onOcrCapture = null
+        overlay?.onProjectionCapture = null
+        overlay?.onImportScreenshot = null
         overlay?.onShowHistory = null
         overlay?.onHidden = null
         overlay?.hide()

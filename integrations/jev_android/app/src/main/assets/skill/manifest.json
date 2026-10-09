@@ -1,0 +1,67 @@
+{
+  "version": "2026-10-10",
+  "generatedFrom": "goutoujunshi skill references",
+  "scope": "Android bundled subset",
+  "files": [
+    {
+      "name": "attachment_emotion.md",
+      "sha256": "3a23188ca0f199676a3aa8908562457f1aee59d244fb00fe0e3780b98f689f24",
+      "bytes": 3600
+    },
+    {
+      "name": "conflict_repair.md",
+      "sha256": "440fadf71455dac36fbe291bffa2246e035f5dd0d9d7167cd9a129443375828b",
+      "bytes": 4471
+    },
+    {
+      "name": "consent_boundary.md",
+      "sha256": "51688890c32a4f134f770d09c210e39361c50fa3753119836fd41b2d5b17c9b4",
+      "bytes": 4037
+    },
+    {
+      "name": "emotion_support.md",
+      "sha256": "565c7b4b9e27993a92de6339e403f9f82ededa87dc1e205d4602742ad6693c8b",
+      "bytes": 12247
+    },
+    {
+      "name": "first_meeting.md",
+      "sha256": "bd52dec6e84d0e986b5c56edd1320e23254d48d00be5dc249a555063d071abff",
+      "bytes": 6657
+    },
+    {
+      "name": "investment_imbalance.md",
+      "sha256": "4e724e9a5b272ad1a6833ddbb9d84eeb86c3b2e395e5f241d90f8655930c77c3",
+      "bytes": 6808
+    },
+    {
+      "name": "manipulation_boundary.md",
+      "sha256": "ea7664289c27c6fcb0ef709583ee10b0b6c0954c4f220a00f665eb74b4529cfb",
+      "bytes": 5232
+    },
+    {
+      "name": "online_dating.md",
+      "sha256": "8c46faff08e601591e12c92df99a0d224b3440a2586660ce70f36ae79479d9d5",
+      "bytes": 6488
+    },
+    {
+      "name": "reply_craft.md",
+      "sha256": "1891c20d1ed85d93ffb0357e0f72ae7e2efcd349da9365f42f900970fe96290b",
+      "bytes": 9852
+    },
+    {
+      "name": "safety_crisis.md",
+      "sha256": "d8a34ca0b20c14e2b7c996c4bcb2cb7774cb94bc99660b66262a95d5aa5ec9c8",
+      "bytes": 5372
+    },
+    {
+      "name": "social_systems.md",
+      "sha256": "9f61db17ef76314b51ac077a908923ab7b379a2d819b040c67fa3e9ed7251faa",
+      "bytes": 9435
+    },
+    {
+      "name": "vibe_calibration.md",
+      "sha256": "01864b3713a8b25bd310a3678b44d2e937ce3a2817c381090d8ba71ab534c4d5",
+      "bytes": 7013
+    }
+  ]
+}

@@ -24,6 +24,13 @@ class ReplyFormatTest {
         rejected("[\" \" , null]")
     }
 
+    @Test fun extractsCoachObjectButRejectsExtraJson() {
+        assertEquals("{\"consultation\":\"先接住情绪\"}",
+            ReplyFormat.extractJsonObject("```json\n{\"consultation\":\"先接住情绪\"}\n```"))
+        assertNull(ReplyFormat.extractJsonObject("[\"好的\"]"))
+        assertNull(ReplyFormat.extractJsonObject("{\"a\":1} second-object"))
+    }
+
     @Test fun rejectsExcessCandidatesAndLongRepliesWithoutTruncating() {
         rejected("[\"一\",\"二\",\"三\",\"四\"]")
         rejected("[\"${"长".repeat(41)}\"]")

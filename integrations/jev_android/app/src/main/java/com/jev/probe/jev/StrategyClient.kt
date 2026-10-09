@@ -8,6 +8,7 @@ import com.jev.probe.core.RankedReply
 import com.jev.probe.core.GoutouGuidance
 import com.jev.probe.core.kb.ChatContext
 import com.jev.probe.core.skill.SkillDigest
+import com.jev.probe.coach.CoachTask
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
@@ -18,7 +19,9 @@ class StrategyClient(private val prefs: Prefs, private val context: Context? = n
     private val strategies = StrategyEvidence.strategies
     private val labels = "ABCDEFG"
 
-    fun judge(snapshot: ChatSnapshot, relationship: String, ctx: ChatContext? = null): Analysis {
+    fun judge(snapshot: ChatSnapshot, relationship: String, ctx: ChatContext? = null,
+              coachTask: CoachTask = CoachTask.REPLY, userGoal: String = "",
+              endMode: String = "", memoryContext: String = ""): Analysis {
         if (GoutouGuidance.explicitBoundary(snapshot)) return GoutouGuidance.boundaryAnalysis()
         val start = System.currentTimeMillis()
         try {
@@ -29,7 +32,10 @@ class StrategyClient(private val prefs: Prefs, private val context: Context? = n
                 "只依据可见对话，区分事实与未知，尊重明确拒绝。只输出 JSON 对象，" +
                 "包含 strategy（七策略之一）、intent（可能的意图）、confidence（0到1或null）、" +
                 "facts（字符串数组）、unknowns（字符串数组）。证据不足时填 null。策略：$definitions"
-            val digest = context?.let { SkillDigest.forPrompt(it, snapshot, relationship, ctx, prefs) }.orEmpty()
+            val digest = context?.let {
+                SkillDigest.forPrompt(it, snapshot, relationship, ctx, prefs, coachTask,
+                    userGoal, endMode, memoryContext)
+            }.orEmpty()
             val input = preparedInput(snapshot, relationship, ctx, digest, system)
             val user = input.toString()
             var evidence = parseEvidence(request(system, user, json = true))

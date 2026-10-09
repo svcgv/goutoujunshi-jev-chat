@@ -34,28 +34,45 @@ class SkillLibrary internal constructor(
      * @param limit maximum number of excerpts to return.
      * @param budget maximum total characters across all returned excerpts.
      */
-    fun search(query: String, limit: Int = 2, budget: Int = 1200): List<String> {
+    fun search(query: String, limit: Int = 2, budget: Int = 1200,
+               requiredFiles: Set<String> = emptySet(), forceSafety: Boolean = false): List<String> {
         if (sections.isEmpty()) return emptyList()
         val haystack = query.lowercase()
-        if (haystack.isBlank()) return emptyList()
+        if (haystack.isBlank() && requiredFiles.isEmpty()) return emptyList()
+        val safetyRisk = forceSafety || RISK_TERMS.any { haystack.contains(it) }
         val scored = sections.mapNotNull { section ->
             var score = 0
             for (kw in section.keywords) if (haystack.contains(kw)) score += kw.length
+            for (kw in titleKeywords(section.title)) if (haystack.contains(kw)) score += kw.length + 2
+            if (section.file in requiredFiles) score += 80
+            if (safetyRisk && section.file in SAFETY_FILES) score += 120
             if (score > 0) section to score else null
-        }.sortedByDescending { it.second }
-        if (scored.isEmpty()) return emptyList()
+        }.sortedWith(compareByDescending<Pair<Section, Int>> { it.second }
+            .thenByDescending { titleKeywords(it.first.title).size })
 
         val out = ArrayList<String>()
         var used = 0
         val seenFiles = HashSet<String>()
         for ((section, _) in scored) {
             if (out.size >= limit) break
-            // At most one excerpt per document keeps the injected advice varied.
+            // One coherent excerpt per document keeps advice focused and bounded.
             if (!seenFiles.add(section.file)) continue
             val text = format(section)
             if (used + text.length > budget && out.isNotEmpty()) continue
             out.add(text)
             used += text.length
+            if (used >= budget) break
+        }
+        return out
+    }
+
+    /** Terms from a section heading, so specific subsections beat generic file hits. */
+    internal fun titleKeywords(title: String): Set<String> {
+        val clean = title.replace(Regex("[^\\p{L}\\p{N}]+"), "")
+        if (clean.length < 2) return emptySet()
+        val out = linkedSetOf<String>()
+        for (n in 2..minOf(6, clean.length)) {
+            for (i in 0..clean.length - n) out.add(clean.substring(i, i + n))
         }
         return out
     }
@@ -109,6 +126,9 @@ class SkillLibrary internal constructor(
             "emotion_support.md",
             "social_systems.md"
         )
+
+        internal val RISK_TERMS = setOf("威胁", "跟踪", "家暴", "强迫", "勒索", "危险", "报警", "法律", "安全", "自杀", "暴力", "骚扰", "控制", "下药", "偷拍")
+        internal val SAFETY_FILES = setOf("safety_crisis.md", "consent_boundary.md", "manipulation_boundary.md")
 
         /** Topic keywords per bundled document. */
         private val KEYWORDS_BY_FILE: Map<String, Set<String>> = mapOf(

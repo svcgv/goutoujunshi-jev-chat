@@ -6,6 +6,10 @@ import com.jev.probe.core.Prefs
 import com.jev.probe.core.RankedReply
 import com.jev.probe.core.GoutouGuidance
 import com.jev.probe.core.kb.ChatContext
+import com.jev.probe.coach.CoachDecision
+import com.jev.probe.coach.CoachRequest
+import com.jev.probe.coach.CoachResponse
+import com.jev.probe.coach.CoachTask
 
 /**
  * Thin facade over the three split clients so callers keep one entry point.
@@ -17,6 +21,9 @@ class JevClient(private val prefs: Prefs, context: android.content.Context? = nu
     private val judgeClient = JudgeClient(prefs)
     private val replyClient = ReplyClient(prefs, context)
     private val strategyClient = StrategyClient(prefs, context)
+
+    fun coach(request: CoachRequest, decision: CoachDecision, ctx: ChatContext? = null): CoachResponse =
+        replyClient.coach(request, ctx, decision)
 
     fun details(snapshot: ChatSnapshot, relationship: String, judgment: Analysis, ctx: ChatContext? = null): String =
         replyClient.details(snapshot, relationship, judgment, ctx)
@@ -34,10 +41,13 @@ class JevClient(private val prefs: Prefs, context: android.content.Context? = nu
         else judgeClient.rank(snapshot, relationship, candidates, ctx)
     } catch (_: Exception) { candidates.map { RankedReply(it, 0.0) } }
 
-    /** The 7 judgment questions. Errors come back inside [Analysis.error]. */
-    fun judge(snapshot: ChatSnapshot, relationship: String, ctx: ChatContext? = null): Analysis =
+    /** The judgment questions. Errors come back inside [Analysis.error]. */
+    fun judge(snapshot: ChatSnapshot, relationship: String, ctx: ChatContext? = null,
+              coachTask: CoachTask = CoachTask.REPLY, userGoal: String = "",
+              endMode: String = "", memoryContext: String = ""): Analysis =
         if (GoutouGuidance.explicitBoundary(snapshot)) GoutouGuidance.boundaryAnalysis()
-        else if (prefs.usesChatStrategy()) strategyClient.judge(snapshot, relationship, ctx)
+        else if (prefs.usesChatStrategy())
+            strategyClient.judge(snapshot, relationship, ctx, coachTask, userGoal, endMode, memoryContext)
         else judgeClient.judge(snapshot, relationship, ctx)
 
     /** Draft 3 candidates on the reply route, then rank them on the judge route. */

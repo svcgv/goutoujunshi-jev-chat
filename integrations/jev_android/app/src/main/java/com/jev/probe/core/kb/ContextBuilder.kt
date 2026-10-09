@@ -3,6 +3,7 @@ package com.jev.probe.core.kb
 import android.content.Context
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.Prefs
+import com.jev.probe.coach.CoachMemoryStore
 
 /**
  * Turns "what is on screen right now" into the extra context one analysis gets:
@@ -32,7 +33,17 @@ object ContextBuilder {
      *         normal state before the user has built a knowledge base.
      */
     fun build(context: Context, snapshot: ChatSnapshot, app: String, prefs: Prefs): ChatContext {
-        return build(KbStore.get(context), snapshot, app, prefs.contextEnabled, prefs.contextHistoryCount)
+        val base = build(KbStore.get(context), snapshot, app, prefs.contextEnabled, prefs.contextHistoryCount)
+        val contactId = base.contact?.id ?: return base
+        val memory = CoachMemoryStore.get(context).contextFor(contactId, maxChars = 1200)
+        if (memory.isBlank()) return base
+        return base.copy(notes = base.notes + Note(
+            id = "authorized-distilled-memory",
+            title = "精简长期记忆",
+            content = memory,
+            tags = emptyList(),
+            alwaysOn = true
+        ))
     }
 
     internal fun build(store: KbStore, snapshot: ChatSnapshot, app: String,

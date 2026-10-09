@@ -1,9 +1,16 @@
 package com.jev.probe.jev
 
 import org.json.JSONArray
+import org.json.JSONObject
 
 /** Only a complete JSON string array can become text that the user may fill. */
 internal object ReplyFormat {
+    /** Returns the JSON object body, accepting fenced output as well. */
+    fun extractJsonObject(content: String): String? = try {
+        val value = ModelJson.decode(content)
+        if (value is JSONObject) value.toString() else null
+    } catch (_: Exception) { null }
+
     fun parse(content: String): List<String> {
         try {
             val array = ModelJson.decode(content) as? JSONArray

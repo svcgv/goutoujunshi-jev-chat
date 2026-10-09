@@ -93,4 +93,27 @@ class SkillLibraryTest {
     @Test fun missingTopicIsNotFabricated() {
         assertFalse(library().search("我们今天讨论的是股票和基金").isNotEmpty())
     }
+
+    @Test fun requiredTaskDocumentWinsEvenWhenTheQueryIsSparse() {
+        val hits = library().search("想开始", limit = 1, requiredFiles = setOf("reply_craft.md"))
+        assertTrue(hits.single().contains("生成流程"))
+    }
+
+    @Test fun safetyCanBeForcedEvenWhenKeywordMatchingWouldMissIt() {
+        val hits = library().search("今天不知道怎么处理", limit = 2, forceSafety = true)
+        assertTrue(hits.any { it.contains("危险") || it.contains("安全") })
+    }
+
+    @Test fun headingTermsRaiseTheSpecificSubsection() {
+        val doc = """
+            # 测试
+            ## 从泛聊转邀约
+            邀约要给出具体时间和地点，并让对方可以轻松拒绝。这段正文足够长可以形成片段。
+            ## 冲突修复
+            冲突后只为已确认的问题道歉，观察对方是否愿意继续谈。这段正文也足够长可以形成片段。
+        """.trimIndent()
+        val hits = SkillLibrary(listOf("first_meeting.md" to doc))
+            .search("我想修复一次冲突并道歉", limit = 3)
+        assertTrue(hits.first().contains("冲突修复"))
+    }
 }

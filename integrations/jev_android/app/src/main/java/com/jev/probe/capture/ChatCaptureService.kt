@@ -21,6 +21,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import com.jev.probe.CrashLogger
 import com.jev.probe.capture.ocr.MlKitOcr
 import com.jev.probe.capture.ocr.OcrLine
@@ -110,6 +111,7 @@ open class ChatCaptureService : AccessibilityService() {
     /** Manual identity only survives the current capture round, never an app switch. */
     private var externalCapturePending = false
     private var projectionStartPending = false
+    private var backfillTitle: String? = null
     @Volatile private var backfillActive = false
     private var backfillToken: WorkToken? = null
     private var waitingExternalBitmap: Bitmap? = null
@@ -792,6 +794,7 @@ open class ChatCaptureService : AccessibilityService() {
         val token = session.beginReview() ?: return
         backfillActive = true
         backfillToken = token
+        backfillTitle = title
         overlay?.showBackfillProgress()
         overlay?.setPanelTouchPassthrough(true)
         val controller = BackfillController(
@@ -828,13 +831,62 @@ open class ChatCaptureService : AccessibilityService() {
      * one live system-capture session (started with explicit consent the first
      * time it is needed). Exactly one callback per call.
      */
-    private fun requestBackfillScreen(pkg: String, cb: (BackfillScreen?) -> Unit) {
-        readBackfillScreen(pkg)?.let { cb(it); return }
+    private fun requestBackfillScreen(pkg: String, cb: (BackfillRead) -> Unit) {
+        // Identity and occlusion are checked before every read, so a switch that
+        // happens mid-run can never fold another conversation's messages in.
+        when (val check = verifyBackfillFrame(pkg)) {
+            null -> Unit
+            else -> { cb(check); return }
+        }
+        readBackfillScreen(pkg)?.let { cb(BackfillRead.Screen(it)); return }
         ocrBackfillScreen(pkg, cb)
     }
 
-    private fun ocrBackfillScreen(pkg: String, cb: (BackfillScreen?) -> Unit) {
-        if (rootInActiveWindow?.packageName?.toString() != pkg) { cb(null); return }
+    /**
+     * Confirm the frame still belongs to the conversation the run started on.
+     *
+     * Returns [BackfillRead.IdentityChanged] or [BackfillRead.Occluded] to stop or
+     * skip the frame, or [BackfillRead.Unreadable] to let the normal retry path
+     * handle a momentarily missing window.
+     */
+    private fun verifyBackfillFrame(pkg: String): BackfillRead? {
+        val root = rootInActiveWindow ?: return BackfillRead.Unreadable
+        val livePkg = root.packageName?.toString()
+        if (livePkg != pkg) return BackfillRead.IdentityChanged
+        val live = adapters[pkg]?.extract(root, resources) ?: return BackfillRead.Unreadable
+        if (live.isGroup) return BackfillRead.IdentityChanged
+        val liveTitle = live.title?.takeUnless { isTransientTitle(it) }
+        val expected = backfillTitle ?: manualWindowTitle
+        if (!expected.isNullOrBlank() && !liveTitle.isNullOrBlank() && liveTitle != expected) {
+            return BackfillRead.IdentityChanged
+        }
+        val band = backfillBand(live)
+        if (FrameOcclusion.isOccluded(VSpan(band.first, band.second), occludingWindows(pkg))) {
+            return BackfillRead.Occluded
+        }
+        return null
+    }
+
+    /** Vertical spans of every foreign window that could sit over the messages. */
+    private fun occludingWindows(chatPkg: String): List<VSpan> {
+        val out = ArrayList<VSpan>()
+        val list = runCatching { windows }.getOrNull() ?: return out
+        for (w in list) {
+            val r = Rect()
+            runCatching { w.getBoundsInScreen(r) }
+            if (r.height() <= 0) continue
+            val type = w.type
+            // Our own floating bubble / panel is not an obstruction.
+            val rootPkg = runCatching { w.root?.packageName?.toString() }.getOrNull()
+            if (rootPkg == packageName) continue
+            if (type == AccessibilityWindowInfo.TYPE_APPLICATION && rootPkg == chatPkg) continue
+            out.add(VSpan(r.top, r.bottom))
+        }
+        return out
+    }
+
+    private fun ocrBackfillScreen(pkg: String, cb: (BackfillRead) -> Unit) {
+        if (rootInActiveWindow?.packageName?.toString() != pkg) { cb(BackfillRead.IdentityChanged); return }
         screenCapture.capture { result ->
             when (result) {
                 is ScreenCapture.Result.Ok -> {
@@ -846,7 +898,8 @@ open class ChatCaptureService : AccessibilityService() {
                     // Our own >=1s throttle, not a real failure: let the
                     // controller retry after the window passes instead of
                     // escalating to a system-consent dialog.
-                    ScreenCapture.CODE_THROTTLED -> main.postDelayed({ cb(null) }, THROTTLE_WAIT_MS)
+                    ScreenCapture.CODE_THROTTLED ->
+                        main.postDelayed({ cb(BackfillRead.Unreadable) }, THROTTLE_WAIT_MS)
                     else -> requestProjectionBackfillScreen(pkg, cb)
                 }
             }
@@ -856,22 +909,23 @@ open class ChatCaptureService : AccessibilityService() {
     /** OCR one frame and turn it into a screen. Sides are unknown by construction. */
     private fun recognizeBackfillFrame(bmp: Bitmap, scaleX: Float, scaleY: Float,
                                        originX: Int, originY: Int, pkg: String,
-                                       cb: (BackfillScreen?) -> Unit) {
+                                       cb: (BackfillRead) -> Unit) {
         ocr.scaleX = scaleX; ocr.scaleY = scaleY; ocr.originX = originX; ocr.originY = originY
         val live = rootInActiveWindow?.takeIf { it.packageName?.toString() == pkg }
             ?.let { adapters[pkg]?.extract(it, resources) }
         val region = screenToBitmapRegion(live, bmp)
-        val band = backfillBand(live, bmp)
+        val band = backfillBand(live)
         ocr.recognize(bmp, region) { lines ->
             bmp.recycle()
-            if (!backfillActive) { cb(null); return@recognize }
+            if (!backfillActive) { cb(BackfillRead.Unreadable); return@recognize }
             val msgs = groupOcrLines(lines)
-            if (msgs.isEmpty()) cb(null) else cb(BackfillScreen(msgs, band.first, band.second))
+            if (msgs.isEmpty()) cb(BackfillRead.Unreadable)
+            else cb(BackfillRead.Screen(BackfillScreen(msgs, band.first, band.second)))
         }
     }
 
     /** Message-area band in screen coordinates for a frame with no node viewport. */
-    private fun backfillBand(snapshot: ChatSnapshot?, bmp: Bitmap): Pair<Int, Int> {
+    private fun backfillBand(snapshot: ChatSnapshot?): Pair<Int, Int> {
         val top = snapshot?.viewportTop
         val bottom = snapshot?.viewportBottom
         if (top != null && bottom != null && bottom - top >= 80) return top to bottom
@@ -879,27 +933,27 @@ open class ChatCaptureService : AccessibilityService() {
         return (h * 0.14f).toInt() to (h * 0.84f).toInt()
     }
 
-    private fun requestProjectionBackfillScreen(pkg: String, cb: (BackfillScreen?) -> Unit) {
-        if (!backfillActive) { cb(null); return }
+    private fun requestProjectionBackfillScreen(pkg: String, cb: (BackfillRead) -> Unit) {
+        if (!backfillActive) { cb(BackfillRead.Unreadable); return }
         if (!ProjectionFrameBus.isActive()) { startProjectionSessionThen(pkg, cb); return }
         ProjectionFrameBus.request { bitmap, error ->
             if (bitmap == null) {
                 Log.w(TAG, "projection frame unavailable: ${error ?: "unknown"}")
-                cb(null); return@request
+                cb(BackfillRead.Unreadable); return@request
             }
             // A projection frame is a full-display bitmap.
             recognizeBackfillFrame(bitmap, 1f, 1f, 0, 0, pkg, cb)
         }
     }
 
-    private fun startProjectionSessionThen(pkg: String, cb: (BackfillScreen?) -> Unit) {
-        if (projectionStartPending) { cb(null); return }
+    private fun startProjectionSessionThen(pkg: String, cb: (BackfillRead) -> Unit) {
+        if (projectionStartPending) { cb(BackfillRead.Unreadable); return }
         projectionStartPending = true
         val sessionId = ProjectionSessionHandoff.begin { ok, error ->
             projectionStartPending = false
             if (!ok || !backfillActive) {
                 if (!ok) Log.w(TAG, "projection session not started: ${error ?: "declined"}")
-                cb(null); return@begin
+                cb(BackfillRead.Unreadable); return@begin
             }
             requestProjectionBackfillScreen(pkg, cb)
         }

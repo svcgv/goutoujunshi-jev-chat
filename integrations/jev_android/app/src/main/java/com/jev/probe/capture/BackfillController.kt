@@ -16,6 +16,20 @@ internal data class BackfillScreen(
 )
 
 /**
+ * Outcome of one attempt to read the current screen.
+ *
+ * The service returns a real screen, "nothing readable", "the conversation is no
+ * longer the one we started with", or "something is covering the messages". The
+ * controller treats each differently: retry, retry without scrolling, or stop.
+ */
+internal sealed interface BackfillRead {
+    data class Screen(val screen: BackfillScreen) : BackfillRead
+    data object Unreadable : BackfillRead
+    data object IdentityChanged : BackfillRead
+    data object Occluded : BackfillRead
+}
+
+/**
  * Drives one automatic history backfill run.
  *
  * The run is a strict serial loop — scroll → settle → read → fold — that always
@@ -35,7 +49,7 @@ internal data class BackfillScreen(
 internal class BackfillController(
     private val options: BackfillOptions,
     private val postDelayed: (Long, () -> Unit) -> Unit,
-    private val requestScreen: ((BackfillScreen?) -> Unit) -> Unit,
+    private val requestScreen: ((BackfillRead) -> Unit) -> Unit,
     private val scroll: (ScrollStep, () -> Unit) -> Unit,
     private val widthPx: () -> Int,
     private val running: () -> Boolean,
@@ -55,6 +69,7 @@ internal class BackfillController(
     private var finished = false
     private var sawGap = false
     private var readFailures = 0
+    private var occlusionWaits = 0
     private var stopReason: BackfillStopReason = BackfillStopReason.HISTORY_TOP
 
     fun start() {
@@ -71,9 +86,14 @@ internal class BackfillController(
         if (bottomSwipes >= BackfillPlan.MAX_BOTTOM_SWIPES) {
             return complete(BackfillStopReason.BOTTOM_UNCONFIRMED)
         }
-        requestScreen { screen ->
+        requestScreen { read ->
             if (finished) return@requestScreen
-            if (screen == null) return@requestScreen failRead { stepToBottom() }
+            val screen = when (read) {
+                is BackfillRead.Screen -> read.screen
+                BackfillRead.IdentityChanged -> return@requestScreen complete(BackfillStopReason.IDENTITY_CHANGED)
+                BackfillRead.Occluded -> return@requestScreen waitForClear { stepToBottom() }
+                BackfillRead.Unreadable -> return@requestScreen failRead { stepToBottom() }
+            }
             readFailures = 0
             val area = screen.viewportTop to screen.viewportBottom
             val sig = ScreenSignature.of(screen.messages)
@@ -107,9 +127,14 @@ internal class BackfillController(
 
     private fun collectStep() {
         if (finished || !running()) return cancel()
-        requestScreen { screen ->
+        requestScreen { read ->
             if (finished) return@requestScreen
-            if (screen == null) return@requestScreen failRead { collectStep() }
+            val screen = when (read) {
+                is BackfillRead.Screen -> read.screen
+                BackfillRead.IdentityChanged -> return@requestScreen complete(BackfillStopReason.IDENTITY_CHANGED)
+                BackfillRead.Occluded -> return@requestScreen waitForClear { collectStep() }
+                BackfillRead.Unreadable -> return@requestScreen failRead { collectStep() }
+            }
             readFailures = 0
             lastArea = screen.viewportTop to screen.viewportBottom
 
@@ -166,9 +191,14 @@ internal class BackfillController(
     private fun stepReturn() {
         if (finished || !running()) return cancel()
         if (returnSwipes >= BackfillPlan.MAX_RETURN_SWIPES) return build()
-        requestScreen { screen ->
+        requestScreen { read ->
             if (finished) return@requestScreen
-            if (screen == null) return@requestScreen failRead { stepReturn() }
+            val screen = when (read) {
+                is BackfillRead.Screen -> read.screen
+                BackfillRead.IdentityChanged -> return@requestScreen complete(BackfillStopReason.IDENTITY_CHANGED)
+                BackfillRead.Occluded -> return@requestScreen waitForClear { stepReturn() }
+                BackfillRead.Unreadable -> return@requestScreen failRead { stepReturn() }
+            }
             readFailures = 0
             val area = screen.viewportTop to screen.viewportBottom
             val sig = ScreenSignature.of(screen.messages)
@@ -218,6 +248,20 @@ internal class BackfillController(
         schedule(RETRY_MS, again)
     }
 
+    /**
+     * An obscured frame must not be merged, but it is also not the caller's
+     * fault — wait for the obstruction to disappear rather than consuming the
+     * unreadable-frame allowance.
+     */
+    private fun waitForClear(again: () -> Unit) {
+        if (!running()) return cancel()
+        occlusionWaits++
+        if (occlusionWaits > MAX_OCCLUSION_WAITS) {
+            return complete(BackfillStopReason.BOTTOM_UNCONFIRMED)
+        }
+        schedule(OCCLUSION_WAIT_MS, again)
+    }
+
     private fun schedule(delayMs: Long, block: () -> Unit) {
         postDelayed(delayMs) { if (!finished && running()) block() }
     }
@@ -232,5 +276,9 @@ internal class BackfillController(
 
         /** Consecutive unreadable frames tolerated before the run gives up. */
         const val MAX_READ_FAILURES = 10
+
+        /** How long to wait, and how often, for an obstructed frame to clear. */
+        const val OCCLUSION_WAIT_MS = 600L
+        const val MAX_OCCLUSION_WAITS = 15
     }
 }

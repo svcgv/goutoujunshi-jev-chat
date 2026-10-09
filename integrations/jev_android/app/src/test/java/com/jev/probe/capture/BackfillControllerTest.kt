@@ -53,7 +53,7 @@ class BackfillControllerTest {
         val controller = BackfillController(
             options = BackfillOptions(target),
             postDelayed = sched::post,
-            requestScreen = { cb -> cb(chat.screen()) },
+            requestScreen = { cb -> cb(BackfillRead.Screen(chat.screen())) },
             scroll = { step, done ->
                 // Translate the planned finger travel into whole messages.
                 val areaHeight = 1000
@@ -108,7 +108,7 @@ class BackfillControllerTest {
         val controller = BackfillController(
             options = BackfillOptions(50),
             postDelayed = sched::post,
-            requestScreen = { cb -> cb(null) },
+            requestScreen = { cb -> cb(BackfillRead.Unreadable) },
             scroll = { _, done -> done() },
             widthPx = { 1000 },
             running = { out == null },
@@ -132,7 +132,7 @@ class BackfillControllerTest {
             requestScreen = { cb ->
                 reads++
                 // Reach the bottom (needs two identical reads), then go blind.
-                cb(if (reads <= 4) chat.screen() else null)
+                cb(if (reads <= 4) BackfillRead.Screen(chat.screen()) else BackfillRead.Unreadable)
             },
             scroll = { _, done -> done() },
             widthPx = { 1000 },
@@ -156,7 +156,7 @@ class BackfillControllerTest {
         val controller = BackfillController(
             options = BackfillOptions(50),
             postDelayed = sched::post,
-            requestScreen = { cb -> cb(chat.screen()) },
+            requestScreen = { cb -> cb(BackfillRead.Screen(chat.screen())) },
             scroll = { step, done ->
                 val travel = kotlin.math.abs(step.endY - step.startY)
                 chat.scroll(towardOlder = step.endY > step.startY,
@@ -177,5 +177,75 @@ class BackfillControllerTest {
         assertEquals(BackfillStopReason.TARGET_REACHED, out!!.stopReason)
         assertEquals(50, out!!.messages.size)
         assertEquals("m79", out!!.messages.last().text)
+    }
+
+    @Test fun anIdentityChangeStopsTheRunImmediately() {
+        val sched = FakeScheduler()
+        var out: BackfillResult? = null
+        var reads = 0
+        val controller = BackfillController(
+            options = BackfillOptions(50),
+            postDelayed = sched::post,
+            requestScreen = { cb ->
+                reads++
+                cb(BackfillRead.IdentityChanged)
+            },
+            scroll = { _, done -> done() },
+            widthPx = { 1000 },
+            running = { out == null },
+            progress = {},
+            onFinish = { out = it })
+        controller.start()
+        sched.runAll()
+        assertEquals(BackfillStopReason.IDENTITY_CHANGED, out!!.stopReason)
+        // No retry loop: a switch is terminal, not a transient read failure. The
+        // return leg may check once more, but never the 10-deep unreadable retry.
+        assertTrue("expected a bounded number of reads, got $reads", reads <= 2)
+    }
+
+    @Test fun anObstructedFrameIsWaitedOutThenCollected() {
+        val sched = FakeScheduler()
+        val chat = FakeChat(total = 80, window = 10, end = 80, reportsListEnd = true)
+        var out: BackfillResult? = null
+        var occlusions = 3
+        val controller = BackfillController(
+            options = BackfillOptions(50),
+            postDelayed = sched::post,
+            requestScreen = { cb ->
+                if (occlusions-- > 0) cb(BackfillRead.Occluded)
+                else cb(BackfillRead.Screen(chat.screen()))
+            },
+            scroll = { step, done ->
+                val travel = kotlin.math.abs(step.endY - step.startY)
+                chat.scroll(towardOlder = step.endY > step.startY,
+                    move = maxOf(1, chat.window * travel / 1000))
+                done()
+            },
+            widthPx = { 1000 },
+            running = { out == null },
+            progress = {},
+            onFinish = { out = it })
+        controller.start()
+        sched.runAll()
+        assertEquals(BackfillStopReason.TARGET_REACHED, out!!.stopReason)
+        assertEquals(50, out!!.messages.size)
+    }
+
+    @Test fun persistentObstructionEventuallyStopsTheRun() {
+        val sched = FakeScheduler()
+        var out: BackfillResult? = null
+        val controller = BackfillController(
+            options = BackfillOptions(50),
+            postDelayed = sched::post,
+            requestScreen = { cb -> cb(BackfillRead.Occluded) },
+            scroll = { _, done -> done() },
+            widthPx = { 1000 },
+            running = { out == null },
+            progress = {},
+            onFinish = { out = it })
+        controller.start()
+        sched.runAll(limit = 5000)
+        assertNotNull(out)
+        assertEquals(BackfillStopReason.BOTTOM_UNCONFIRMED, out!!.stopReason)
     }
 }

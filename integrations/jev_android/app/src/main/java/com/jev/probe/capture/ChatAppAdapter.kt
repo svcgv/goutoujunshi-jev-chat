@@ -36,21 +36,36 @@ private fun looksLikeTimestamp(t: String): Boolean =
         t == "昨天" || t == "今天"
 
 /**
+ * Upper bound (exclusive) of the band searched for a conversation title.
+ *
+ * The first message bubble normally sits just below the title, so its top edge is
+ * a good bound. But when the list is scrolled the topmost bubble can slide under
+ * the action bar and report a small or even negative top — and using THAT as the
+ * bound collapses the search band to nothing, hiding a title that is plainly
+ * visible on screen. Fall back to the screen band in that case.
+ */
+internal fun actionBarSearchBottom(screenHeight: Int): Int = (screenHeight * 0.14f).toInt()
+
+/**
  * Conversation title in the top action bar: the topmost short, roughly centered
- * text above the first message bubble. Constrained so we never grab an in-chat
- * timestamp. Used by QQ as a fallback when its title id is absent, by X, and by
- * the bubble menu's manual OCR capture. WeChat has its own [findWeChatTitle]
- * (group titles need extra filtering this generic version does not do).
+ * text inside the action-bar band. Constrained so we never grab an in-chat
+ * timestamp. The band deliberately does NOT depend on where the first message
+ * bubble is: once the list is scrolled the topmost bubble slides under the
+ * action bar and reports a small or negative top, which used to collapse the
+ * band and hide a title that is plainly visible.
+ *
+ * Used by QQ as a fallback when its title id is absent, by X, and by the bubble
+ * menu's manual OCR capture. WeChat has its own [findWeChatTitle] (group titles
+ * need extra filtering this generic version does not do).
  */
 internal fun findTitleInActionBar(
     root: AccessibilityNodeInfo,
-    firstBubbleTop: Int,
     width: Int,
     res: Resources,
     minCenterRatio: Double = 0.25,
     maxCenterRatio: Double = 0.75
 ): String? {
-    val actionBarMax = minOf(firstBubbleTop, (res.displayMetrics.heightPixels * 0.14).toInt())
+    val actionBarMax = actionBarSearchBottom(res.displayMetrics.heightPixels)
     val minCenterX = (width * minCenterRatio).toInt()
     val maxCenterX = (width * maxCenterRatio).toInt()
     val stack = ArrayDeque<AccessibilityNodeInfo>()
@@ -101,11 +116,10 @@ private val WECHAT_GROUP_COUNT_SUFFIX = Regex("""(?:\(|（)\d+(?:\)|）)""")
  */
 internal fun findWeChatTitle(
     root: AccessibilityNodeInfo,
-    firstBubbleTop: Int,
     width: Int,
     res: Resources
 ): String? {
-    val actionBarMax = minOf(firstBubbleTop, (res.displayMetrics.heightPixels * 0.14).toInt())
+    val actionBarMax = actionBarSearchBottom(res.displayMetrics.heightPixels)
     val minCenterX = (width * 0.25).toInt()
     val maxCenterX = (width * 0.75).toInt()
     val stack = ArrayDeque<AccessibilityNodeInfo>()
@@ -129,7 +143,7 @@ internal fun findWeChatTitle(
             !WECHAT_TITLE_EXCLUDE_PUNCT.containsMatchIn(text)
         ) {
             val b = Rect(); node.getBoundsInScreen(b)
-            if (b.bottom in 1 until actionBarMax && b.bottom < firstBubbleTop &&
+            if (b.bottom in 1 until actionBarMax &&
                 b.centerX() in minCenterX..maxCenterX
             ) {
                 if (WECHAT_GROUP_COUNT_SUFFIX.containsMatchIn(text)) {
@@ -185,7 +199,7 @@ class WeChatAdapter : ChatAppAdapter {
             }
             for (i in node.childCount - 1 downTo 0) node.getChild(i)?.let { stack.addLast(it) }
         }
-        val title = findWeChatTitle(root, firstBubbleTop, width, res)
+        val title = findWeChatTitle(root, width, res)
         // In a chat but nothing readable → empty snapshot, the OCR fallback cue.
         val group = title?.let { Regex("(?:\\(|\\uFF08)\\d+(?:\\)|\\uFF09)$").containsMatchIn(it) } == true
         val top = firstBubbleTop.takeIf { it != Int.MAX_VALUE }
@@ -234,7 +248,6 @@ class QQAdapter : ChatAppAdapter {
         val width = res.displayMetrics.widthPixels
         // top, left, right, text
         val bubbles = ArrayList<Bubble>()
-        var firstBubbleTop = Int.MAX_VALUE
         var title: String? = null
         var hasInput = false
 
@@ -249,7 +262,6 @@ class QQAdapter : ChatAppAdapter {
             if (id == BUBBLE_ID && !text.isNullOrBlank()) {
                 val b = Rect(); node.getBoundsInScreen(b)
                 bubbles.add(Bubble(b.top, b.left, b.right, text))
-                if (b.top < firstBubbleTop) firstBubbleTop = b.top
             }
             if (!hasInput && id == INPUT_ID) hasInput = true
             if (id == TITLE_ID && title == null) text?.let { if (it.isNotBlank()) title = it }
@@ -257,7 +269,7 @@ class QQAdapter : ChatAppAdapter {
         }
         if (bubbles.isEmpty() && !hasInput) return null
 
-        if (title == null) title = findTitleInActionBar(root, firstBubbleTop, width, res)
+        if (title == null) title = findTitleInActionBar(root, width, res)
         if (bubbles.isEmpty()) return ChatSnapshot(title, emptyList(), listAtEnd = ListEndSignal.detect(root))
 
         val avatarEdge = (width * 0.13).toInt()
@@ -476,7 +488,6 @@ class XAdapter : ChatAppAdapter {
     override fun extract(root: AccessibilityNodeInfo, res: Resources): ChatSnapshot? {
         val width = res.displayMetrics.widthPixels
         val rows = ArrayList<Row>()
-        var firstRowTop = Int.MAX_VALUE
         var hasInput = false
         // A full-width View whose desc has a separator ("：" / ": ") — the shape
         // of a message row, whether or not parseXDesc could fully parse it.
@@ -506,7 +517,6 @@ class XAdapter : ChatAppAdapter {
                     val parsed = parseXDesc(desc)
                     if (parsed != null) {
                         rows.add(Row(b.top, parsed.first, parsed.second))
-                        if (b.top < firstRowTop) firstRowTop = b.top
                     }
                 }
             }
@@ -531,7 +541,7 @@ class XAdapter : ChatAppAdapter {
 
         // X left-aligns the thread title (x≈300..443 of 1200), so widen the
         // shared helper's "roughly centered" band for this app.
-        val title = findTitleInActionBar(root, firstRowTop, width, res, 0.15, 0.85)
+        val title = findTitleInActionBar(root, width, res, 0.15, 0.85)
         // In a DM thread but no rows parsed → empty snapshot (OCR fallback cue).
         if (rows.isEmpty()) return ChatSnapshot(title, emptyList())
         rows.sortBy { it.top }

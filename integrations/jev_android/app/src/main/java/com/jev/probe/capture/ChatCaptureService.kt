@@ -672,9 +672,18 @@ open class ChatCaptureService : AccessibilityService() {
         val binding = boundContact(snapshot.title, pkg)
         val contact = binding?.let { store.contact(it.contactId) }
         CrashLogger.diag(this, "bindingSummary bound=${contact != null}")
-        overlay?.setBindingSummary(if (contact == null) "未绑定对象 · 不加载历史"
-            else "对象：${contact.name} · 已存 ${store.logSize(contact.id)} 条 · " +
-                if (binding.remember && prefs.contextEnabled) "记忆已启用" else "记忆暂停")
+        val summary = when {
+            contact != null -> "对象：${contact.name} · 已存 ${store.logSize(contact.id)} 条 · " +
+                if (binding!!.remember && prefs.contextEnabled) "记忆已启用" else "记忆暂停"
+            // The app HAS bindings, we just could not prove which one this window
+            // is. Saying "未绑定" here is wrong and sent the user looking for a
+            // problem that does not exist; name the real situation instead.
+            pkg.isNotBlank() && store.bindingsForApp(pkg).isNotEmpty() ->
+                "未识别到已绑定对象（本应用有 ${store.bindingsForApp(pkg).size} 个绑定）" +
+                    " · 点「绑定对象 / 记忆设置」确认"
+            else -> "未绑定对象 · 不加载历史"
+        }
+        overlay?.setBindingSummary(summary)
     }
 
     private fun showBinding(afterSave: (() -> Unit)? = null) {
@@ -1380,7 +1389,7 @@ open class ChatCaptureService : AccessibilityService() {
         val extracted = root?.let { adapters[pkg]?.extract(it, resources) }
         if (extracted?.isGroup == true) { overlay?.showError("暂不支持群聊"); return }
         val title = extracted?.title ?: root?.let {
-            findTitleInActionBar(it, Int.MAX_VALUE, resources.displayMetrics.widthPixels, resources, 0.15, 0.85)
+            findTitleInActionBar(it, resources.displayMetrics.widthPixels, resources, 0.15, 0.85)
         }
         // Remember a usable name BEFORE cancelWork(), which clears session state
         // (including the confirmed name) and would otherwise make the identity

@@ -32,6 +32,7 @@ import com.jev.probe.core.GoutouGuidance
 import com.jev.probe.core.Prefs
 import com.jev.probe.core.RankedReply
 import com.jev.probe.core.Msg
+import com.jev.probe.core.MessageEditing
 import com.jev.probe.capture.BackfillResult
 import com.jev.probe.capture.BackfillState
 import com.jev.probe.capture.MessageCompleteness
@@ -548,49 +549,96 @@ class OverlayController(private val ctx: Context) {
     }
 
     /**
-     * Per-message review. Unlike the single-line format, each message keeps its
-     * own editor, so a long bubble with internal newlines round-trips intact.
+     * Per-message review. Each message keeps its own editor, so a long bubble
+     * with internal newlines round-trips intact. Split / merge-with-next / delete
+     * let the user repair OCR and stitching mistakes before anything is saved.
      */
     internal fun showMessageReview(title: String?, result: BackfillResult,
                           onConfirm: (List<Msg>) -> Unit, onCancel: () -> Unit) {
         ensureRoot(); ensurePanel()
         reviewCancel = onCancel
-        val rows = ArrayList<ReviewRow>()
         val container = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        val model = ArrayList(result.messages.map {
+            ReviewItem(it.side, it.text, it.completeness)
+        })
+        val rows = ArrayList<Row>()
+        val usedOcr = result.messages.any { it.side == "unknown" }
 
-        result.messages.forEachIndexed { index, cm ->
-            val row = ReviewRow(cm.side)
-            val header = TextView(ctx).apply {
-                textSize = 12f
-                setPadding(0, dp(6), 0, dp(2))
-                setTextColor(Color.parseColor("#2B5245"))
-                setTypeface(typeface, Typeface.BOLD)
-                text = reviewHeader(index, row.side, cm.completeness)
-                setOnClickListener {
-                    row.side = nextSide(row.side)
-                    text = reviewHeader(index, row.side, cm.completeness)
-                }
-            }
-            val editor = EditText(ctx).apply {
-                setText(cm.text)
-                setTextColor(Color.parseColor("#24382d"))
-                textSize = 13f
-                gravity = Gravity.TOP
-                maxLines = 8
-                setPadding(dp(8), dp(6), dp(8), dp(6))
-                background = card(8, Color.WHITE, stroke = true)
-            }
-            row.read = { editor.text.toString() }
-            rows.add(row)
-            container.addView(header)
-            container.addView(editor)
+        /** Push every editor's current text back into the model. */
+        fun capture() {
+            rows.forEach { it.item.text = it.editor.text.toString() }
         }
 
-        val confirm = bigButton("确认原文并分析") {
-            val msgs = rows.mapNotNull { r ->
-                val t = r.read().trim()
-                if (t.isEmpty()) null else Msg(r.side, t)
+        /** Rebuild the list after a structural edit. */
+        fun render() {
+            container.removeAllViews()
+            rows.clear()
+            model.forEachIndexed { index, item ->
+                val header = TextView(ctx).apply {
+                    textSize = 12f
+                    setPadding(0, dp(8), 0, dp(2))
+                    setTextColor(Color.parseColor("#2B5245"))
+                    setTypeface(typeface, Typeface.BOLD)
+                    text = reviewHeader(index, item.side, item.completeness)
+                    setOnClickListener {
+                        item.side = nextSide(item.side)
+                        text = reviewHeader(index, item.side, item.completeness)
+                    }
+                }
+                val editor = EditText(ctx).apply {
+                    setText(item.text)
+                    setTextColor(Color.parseColor("#24382d"))
+                    textSize = 13f
+                    gravity = Gravity.TOP
+                    maxLines = 8
+                    setPadding(dp(8), dp(6), dp(8), dp(6))
+                    background = card(8, Color.WHITE, stroke = true)
+                }
+                val actions = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+                actions.addView(smallAction("拆分") {
+                    capture()
+                    val split = MessageEditing.split(item.text, editor.selectionStart)
+                    if (split == null) {
+                        toast("把光标放在正文中间再拆分")
+                    } else {
+                        model[index] = item.copy(text = split.first)
+                        model.add(index + 1, item.copy(text = split.second))
+                        render()
+                    }
+                })
+                actions.addView(smallAction("合并下一条") {
+                    if (index + 1 >= model.size) {
+                        toast("后面没有可合并的消息")
+                    } else {
+                        capture()
+                        val next = model[index + 1]
+                        model[index] = item.copy(text = MessageEditing.merge(item.text, next.text))
+                        model.removeAt(index + 1)
+                        render()
+                    }
+                })
+                actions.addView(smallAction("删除") {
+                    capture()
+                    model.removeAt(index)
+                    render()
+                })
+                rows.add(Row(item, editor))
+                container.addView(header)
+                container.addView(editor)
+                container.addView(actions)
             }
+        }
+
+        fun collect(): List<Msg> = model.mapNotNull { item ->
+            val t = item.text.trim()
+            if (t.isEmpty()) null else Msg(item.side, t)
+        }
+
+        render()
+
+        val confirm = bigButton("确认原文并分析") {
+            capture()
+            val msgs = collect()
             when {
                 msgs.isEmpty() -> toast("至少保留一条消息")
                 msgs.any { it.side == "unknown" } -> toast("请点击每一行把“待确认”改成我或对方")
@@ -601,8 +649,8 @@ class OverlayController(private val ctx: Context) {
             line("核对本轮对话", "#24382d", 16f, true),
             hint(title?.let { "当前会话：$it" } ?: "当前会话身份待确认"),
             hint(result.summary()),
-            hint("点击每行标题可切换 我／对方；正文可直接编辑，留空即删除该条。"),
-            if (result.messages.any { it.side == "unknown" })
+            hint("点击标题切换 我／对方；正文可直接编辑。每条下方可拆分、与下一条合并或删除。"),
+            if (usedOcr)
                 hint("本次包含本地 OCR 结果：说话人无法自动判断，带「待确认」的每一条都必须手动指定我／对方。")
             else hint(""),
             container,
@@ -612,8 +660,26 @@ class OverlayController(private val ctx: Context) {
         panelRoot?.post { if (expanded) expandPanel(); setPanelFocusable(true) }
     }
 
-    private class ReviewRow(var side: String) {
-        lateinit var read: () -> String
+    private data class ReviewItem(
+        var side: String,
+        var text: String,
+        val completeness: MessageCompleteness
+    )
+
+    private class Row(val item: ReviewItem, val editor: EditText)
+
+    /** Small inline button used by the split / merge / delete strip. */
+    private fun smallAction(label: String, onClick: () -> Unit) = TextView(ctx).apply {
+        text = label
+        textSize = 12f
+        gravity = Gravity.CENTER
+        setTextColor(Color.parseColor("#2B5245"))
+        setPadding(dp(10), dp(4), dp(10), dp(4))
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { rightMargin = dp(6); topMargin = dp(2) }
+        isClickable = true
+        setOnClickListener { onClick() }
     }
 
     private fun nextSide(side: String): String = when (side) {

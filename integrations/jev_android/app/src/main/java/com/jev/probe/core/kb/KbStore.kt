@@ -280,6 +280,40 @@ class KbStore internal constructor(private val root: File, private val report: (
         }
     }
 
+    /**
+     * Record one reviewed backfill batch for [contactId].
+     *
+     * The batch is older history, so it is inserted at (or merged into) the front
+     * of the stored timeline rather than appended. Re-running with the same batch
+     * is idempotent. When continuity cannot be proven the batch is stored as an
+     * independent fragment (a shared non-null fragmentId) instead of being forced
+     * onto the main timeline.
+     */
+    fun rememberBackfill(contactId: String, app: String, messages: List<com.jev.probe.core.Msg>): Boolean {
+        if (messages.isEmpty()) return false
+        synchronized(lock) {
+            val list = loadLog(contactId)
+            val now = System.currentTimeMillis()
+            val incoming = messages.map { LogEntry(it.side, it.text, now, app) }
+            val probe = HistoryMerge.insert(list, incoming)
+            val batch = if (probe.anchored) incoming
+                        else incoming.map { it.copy(fragmentId = newId()) }
+            val result = if (probe.anchored) probe else HistoryMerge.insert(list, batch)
+            val merged = ArrayList(result.entries)
+            while (merged.size > MAX_LOG) merged.removeAt(0)
+            val ok = writeAtomic(logFile(contactId), logJson(merged))
+            if (!ok) logCache.remove(contactId)
+            report("rememberBackfill contact=$contactId inserted=${result.inserted} " +
+                "anchored=${result.anchored} total=${merged.size} ok=$ok")
+            return ok
+        }
+    }
+
+    /** True when any stored row belongs to an order-uncertain fragment. */
+    fun hasFragments(contactId: String): Boolean = synchronized(lock) {
+        loadLog(contactId).any { it.fragmentId != null }
+    }
+
     /** The newest [n] entries, oldest first. */
     fun recentLog(contactId: String, n: Int): List<LogEntry> {
         if (n <= 0) return emptyList()
@@ -409,7 +443,8 @@ class KbStore internal constructor(private val root: File, private val report: (
                     side = o.optString("side", "other"),
                     text = o.optString("text"),
                     ts = o.optLong("ts", 0L),
-                    app = o.optString("app")
+                    app = o.optString("app"),
+                    fragmentId = o.optString("fragmentId").takeIf { it.isNotBlank() }
                 ))
             }
         }
@@ -453,11 +488,13 @@ class KbStore internal constructor(private val root: File, private val report: (
     private fun logJson(list: List<LogEntry>): String {
         val arr = JSONArray()
         list.forEach { e ->
-            arr.put(JSONObject()
+            val o = JSONObject()
                 .put("side", e.side)
                 .put("text", e.text)
                 .put("ts", e.ts)
-                .put("app", e.app))
+                .put("app", e.app)
+            e.fragmentId?.let { o.put("fragmentId", it) }
+            arr.put(o)
         }
         return arr.toString()
     }

@@ -40,8 +40,20 @@ data class Contact(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
-/** One remembered chat line. side is "me" / "other", matching [com.jev.probe.core.Msg]. */
-data class LogEntry(val side: String, val text: String, val ts: Long, val app: String)
+/**
+ * One remembered chat line. side is "me" / "other", matching [com.jev.probe.core.Msg].
+ *
+ * [fragmentId] is null for rows on the main timeline. Rows from a backfill whose
+ * continuity with the timeline could not be proven get a shared non-null id, so
+ * consumers can show them without claiming they join seamlessly.
+ */
+data class LogEntry(
+    val side: String,
+    val text: String,
+    val ts: Long,
+    val app: String,
+    val fragmentId: String? = null
+)
 
 /**
  * What one analysis gets to see beyond the on-screen messages: who the other

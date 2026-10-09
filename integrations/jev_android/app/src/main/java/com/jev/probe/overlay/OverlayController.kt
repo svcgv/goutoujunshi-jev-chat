@@ -602,6 +602,9 @@ class OverlayController(private val ctx: Context) {
             hint(title?.let { "当前会话：$it" } ?: "当前会话身份待确认"),
             hint(result.summary()),
             hint("点击每行标题可切换 我／对方；正文可直接编辑，留空即删除该条。"),
+            if (result.messages.any { it.side == "unknown" })
+                hint("本次包含本地 OCR 结果：说话人无法自动判断，带「待确认」的每一条都必须手动指定我／对方。")
+            else hint(""),
             container,
             confirm,
             actionGroup(listOf("放弃本轮" to { finishReview(); releaseFocus(); onCancel() }))))

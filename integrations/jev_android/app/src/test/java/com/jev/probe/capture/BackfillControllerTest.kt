@@ -47,7 +47,7 @@ class BackfillControllerTest {
         val controller = BackfillController(
             options = BackfillOptions(target),
             postDelayed = sched::post,
-            readScreen = { chat.screen() },
+            requestScreen = { cb -> cb(chat.screen()) },
             scroll = { step, done ->
                 // Translate the planned finger travel into whole messages.
                 val areaHeight = 1000
@@ -102,7 +102,7 @@ class BackfillControllerTest {
         val controller = BackfillController(
             options = BackfillOptions(50),
             postDelayed = sched::post,
-            readScreen = { null },
+            requestScreen = { cb -> cb(null) },
             scroll = { _, done -> done() },
             widthPx = { 1000 },
             running = { out == null },
@@ -123,10 +123,10 @@ class BackfillControllerTest {
         val controller = BackfillController(
             options = BackfillOptions(50),
             postDelayed = sched::post,
-            readScreen = {
+            requestScreen = { cb ->
                 reads++
                 // Reach the bottom (needs two identical reads), then go blind.
-                if (reads <= 4) chat.screen() else null
+                cb(if (reads <= 4) chat.screen() else null)
             },
             scroll = { _, done -> done() },
             widthPx = { 1000 },

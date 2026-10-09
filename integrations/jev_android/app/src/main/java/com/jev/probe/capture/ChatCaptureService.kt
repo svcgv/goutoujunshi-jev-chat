@@ -7,6 +7,9 @@ import android.accessibilityservice.GestureDescription
 import android.content.res.Configuration
 import com.jev.probe.CapturePermissionActivity
 import com.jev.probe.capture.ocr.CaptureHandoff
+import com.jev.probe.capture.ocr.ProjectionCaptureService
+import com.jev.probe.capture.ocr.ProjectionFrameBus
+import com.jev.probe.capture.ocr.ProjectionSessionHandoff
 import com.jev.probe.core.kb.Contact
 import com.jev.probe.core.kb.ConversationBinding
 import android.graphics.Bitmap
@@ -106,6 +109,7 @@ open class ChatCaptureService : AccessibilityService() {
 
     /** Manual identity only survives the current capture round, never an app switch. */
     private var externalCapturePending = false
+    private var projectionStartPending = false
     @Volatile private var backfillActive = false
     private var backfillToken: WorkToken? = null
     private var waitingExternalBitmap: Bitmap? = null
@@ -456,6 +460,7 @@ open class ChatCaptureService : AccessibilityService() {
     private fun cancelWork() {
         backfillActive = false
         backfillToken = null
+        stopProjectionSession()
         overlay?.setPanelTouchPassthrough(false)
         session.reset()
         externalCapturePending = false
@@ -768,16 +773,15 @@ open class ChatCaptureService : AccessibilityService() {
             ?: run { overlay?.showError("当前不在可识别的聊天窗口"); return }
         if (live.isGroup) { overlay?.showError("暂不支持群聊"); return }
         if (!prefs.isAllowed(live.title)) { overlay?.showError("此会话不在白名单内"); return }
-        // Automatic backfill drives many screens; it needs node-readable text to
-        // tell bubbles apart. When the tree carries nothing, do not start a run
-        // that is guaranteed to stop unreadable — point at the one-shot paths.
-        if (live.messages.none { it.text.isNotBlank() }) {
-            overlay?.showError("当前窗口读不到文字，自动补录需要可读的聊天节点；" +
-                "请改用「截屏识别一次」或「导入聊天截图」")
+        val title = live.title?.takeUnless { isTransientTitle(it) } ?: manualWindowTitle
+        // Node text is the primary source; when the tree carries none we fall back
+        // to local OCR. That fallback cannot attribute speakers, so we still refuse
+        // to start unless the conversation identity itself is confirmed.
+        if (live.messages.none { it.text.isNotBlank() } && title.isNullOrBlank()) {
+            overlay?.showError("无法确认当前会话身份，不能自动补录；请先绑定对象，或改用「截屏识别一次」")
             return
         }
         activePkg = pkg
-        val title = live.title?.takeUnless { isTransientTitle(it) } ?: manualWindowTitle
         overlay?.showBackfillPrompt(title, BackfillPlan.TARGET_MESSAGES,
             onStart = { n -> startBackfill(n, pkg, title) },
             onCancel = { overlay?.showIdle(title) })
@@ -793,7 +797,7 @@ open class ChatCaptureService : AccessibilityService() {
         val controller = BackfillController(
             options = BackfillOptions(target),
             postDelayed = { delay, block -> main.postDelayed(block, delay) },
-            readScreen = { readBackfillScreen(pkg) },
+            requestScreen = { cb -> requestBackfillScreen(pkg, cb) },
             scroll = { step, done -> dispatchScroll(step, done) },
             widthPx = { resources.displayMetrics.widthPixels },
             running = { backfillActive && session.isCurrent(token) },
@@ -815,6 +819,108 @@ open class ChatCaptureService : AccessibilityService() {
         val bottom = snap.viewportBottom ?: (h * 0.84f).toInt()
         if (bottom - top < 80) return null
         return BackfillScreen(messages, top, bottom)
+    }
+
+    /**
+     * Async read for the backfill loop.
+     *
+     * Priority: readable node tree → accessibility screenshot + local OCR →
+     * one live system-capture session (started with explicit consent the first
+     * time it is needed). Exactly one callback per call.
+     */
+    private fun requestBackfillScreen(pkg: String, cb: (BackfillScreen?) -> Unit) {
+        readBackfillScreen(pkg)?.let { cb(it); return }
+        ocrBackfillScreen(pkg, cb)
+    }
+
+    private fun ocrBackfillScreen(pkg: String, cb: (BackfillScreen?) -> Unit) {
+        if (rootInActiveWindow?.packageName?.toString() != pkg) { cb(null); return }
+        screenCapture.capture { result ->
+            when (result) {
+                is ScreenCapture.Result.Ok -> {
+                    val bmp = result.bitmap
+                    recognizeBackfillFrame(bmp, result.scaleX, result.scaleY,
+                        result.originX, result.originY, pkg, cb)
+                }
+                is ScreenCapture.Result.Failed -> when (result.code) {
+                    // Our own >=1s throttle, not a real failure: let the
+                    // controller retry after the window passes instead of
+                    // escalating to a system-consent dialog.
+                    ScreenCapture.CODE_THROTTLED -> main.postDelayed({ cb(null) }, THROTTLE_WAIT_MS)
+                    else -> requestProjectionBackfillScreen(pkg, cb)
+                }
+            }
+        }
+    }
+
+    /** OCR one frame and turn it into a screen. Sides are unknown by construction. */
+    private fun recognizeBackfillFrame(bmp: Bitmap, scaleX: Float, scaleY: Float,
+                                       originX: Int, originY: Int, pkg: String,
+                                       cb: (BackfillScreen?) -> Unit) {
+        ocr.scaleX = scaleX; ocr.scaleY = scaleY; ocr.originX = originX; ocr.originY = originY
+        val live = rootInActiveWindow?.takeIf { it.packageName?.toString() == pkg }
+            ?.let { adapters[pkg]?.extract(it, resources) }
+        val region = screenToBitmapRegion(live, bmp)
+        val band = backfillBand(live, bmp)
+        ocr.recognize(bmp, region) { lines ->
+            bmp.recycle()
+            if (!backfillActive) { cb(null); return@recognize }
+            val msgs = groupOcrLines(lines)
+            if (msgs.isEmpty()) cb(null) else cb(BackfillScreen(msgs, band.first, band.second))
+        }
+    }
+
+    /** Message-area band in screen coordinates for a frame with no node viewport. */
+    private fun backfillBand(snapshot: ChatSnapshot?, bmp: Bitmap): Pair<Int, Int> {
+        val top = snapshot?.viewportTop
+        val bottom = snapshot?.viewportBottom
+        if (top != null && bottom != null && bottom - top >= 80) return top to bottom
+        val h = resources.displayMetrics.heightPixels
+        return (h * 0.14f).toInt() to (h * 0.84f).toInt()
+    }
+
+    private fun requestProjectionBackfillScreen(pkg: String, cb: (BackfillScreen?) -> Unit) {
+        if (!backfillActive) { cb(null); return }
+        if (!ProjectionFrameBus.isActive()) { startProjectionSessionThen(pkg, cb); return }
+        ProjectionFrameBus.request { bitmap, error ->
+            if (bitmap == null) {
+                Log.w(TAG, "projection frame unavailable: ${error ?: "unknown"}")
+                cb(null); return@request
+            }
+            // A projection frame is a full-display bitmap.
+            recognizeBackfillFrame(bitmap, 1f, 1f, 0, 0, pkg, cb)
+        }
+    }
+
+    private fun startProjectionSessionThen(pkg: String, cb: (BackfillScreen?) -> Unit) {
+        if (projectionStartPending) { cb(null); return }
+        projectionStartPending = true
+        val sessionId = ProjectionSessionHandoff.begin { ok, error ->
+            projectionStartPending = false
+            if (!ok || !backfillActive) {
+                if (!ok) Log.w(TAG, "projection session not started: ${error ?: "declined"}")
+                cb(null); return@begin
+            }
+            requestProjectionBackfillScreen(pkg, cb)
+        }
+        try {
+            startActivity(Intent(this, CapturePermissionActivity::class.java)
+                .putExtra("requestId", sessionId)
+                .putExtra("session", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {
+            ProjectionSessionHandoff.fail(sessionId, "无法打开系统授权")
+        }
+    }
+
+    /** Tear down any live system-capture session started for a backfill. */
+    private fun stopProjectionSession() {
+        projectionStartPending = false
+        ProjectionSessionHandoff.cancel()
+        if (ProjectionFrameBus.isActive()) {
+            ProjectionFrameBus.clear()
+            runCatching { ProjectionCaptureService.stop(this) }
+        }
     }
 
     /** Dispatch one synthesized drag inside the message area. */
@@ -839,6 +945,7 @@ open class ChatCaptureService : AccessibilityService() {
         if (!backfillActive) return
         backfillActive = false
         backfillToken = null
+        stopProjectionSession()
         overlay?.setPanelTouchPassthrough(false)
         overlay?.setHiddenForShot(false)
         if (notify) {
@@ -853,6 +960,7 @@ open class ChatCaptureService : AccessibilityService() {
         if (!session.isCurrent(token) || !session.reviewPending) return
         backfillActive = false
         backfillToken = null
+        stopProjectionSession()
         overlay?.setPanelTouchPassthrough(false)
         if (result.messages.isEmpty()) {
             session.confirmReview(token)
@@ -1530,6 +1638,7 @@ open class ChatCaptureService : AccessibilityService() {
         private const val TAG = "JEVASSIST"
         private const val WECHAT_PACKAGE = "com.tencent.mm"
         private const val QQ_PACKAGE = "com.tencent.mobileqq"
+        private const val THROTTLE_WAIT_MS = 1100L
         private const val REVIEW_FOCUS_RETRIES = 20
         private const val REVIEW_FOCUS_RETRY_MS = 50L
 

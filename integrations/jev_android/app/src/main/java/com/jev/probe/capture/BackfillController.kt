@@ -18,6 +18,10 @@ internal data class BackfillScreen(
  * next tick) are injected lambdas so the whole state machine can be unit-tested
  * on the JVM.
  *
+ * Reading is asynchronous on purpose: the node tree answers immediately, but the
+ * OCR fallback has to take a screenshot and run recognition first, so the
+ * controller waits for exactly one callback per read.
+ *
  * Reaching the bottom is verified before collecting: while scrolling toward newer
  * messages we require two consecutive identical reads, so one lucky frame is
  * never mistaken for "already at the bottom".
@@ -25,7 +29,7 @@ internal data class BackfillScreen(
 internal class BackfillController(
     private val options: BackfillOptions,
     private val postDelayed: (Long, () -> Unit) -> Unit,
-    private val readScreen: () -> BackfillScreen?,
+    private val requestScreen: ((BackfillScreen?) -> Unit) -> Unit,
     private val scroll: (ScrollStep, () -> Unit) -> Unit,
     private val widthPx: () -> Int,
     private val running: () -> Boolean,
@@ -57,24 +61,27 @@ internal class BackfillController(
     // ---- reach the bottom ------------------------------------------------
 
     private fun stepToBottom() {
-        if (!running()) return cancel()
+        if (finished || !running()) return cancel()
         if (bottomSwipes >= BackfillPlan.MAX_BOTTOM_SWIPES) {
             return complete(BackfillStopReason.BOTTOM_UNCONFIRMED)
         }
-        val screen = readScreen() ?: return failRead { stepToBottom() }
-        readFailures = 0
-        val area = screen.viewportTop to screen.viewportBottom
-        val sig = ScreenSignature.of(screen.messages)
-        val stable = sig == lastSignature && area == lastArea
-        lastSignature = sig
-        lastArea = area
-        if (stable && bottomSwipes > 0) return beginCollect(screen)
+        requestScreen { screen ->
+            if (finished) return@requestScreen
+            if (screen == null) return@requestScreen failRead { stepToBottom() }
+            readFailures = 0
+            val area = screen.viewportTop to screen.viewportBottom
+            val sig = ScreenSignature.of(screen.messages)
+            val stable = sig == lastSignature && area == lastArea
+            lastSignature = sig
+            lastArea = area
+            if (stable && bottomSwipes > 0) return@requestScreen beginCollect(screen)
 
-        val plan = BackfillScroll.plan(widthPx(), area.first, area.second,
-            towardOlder = false, step = BackfillScroll.COLLECT_STEP)
-            ?: return complete(BackfillStopReason.BOTTOM_UNCONFIRMED)
-        bottomSwipes++
-        scroll(plan) { schedule(SETTLE_MS) { stepToBottom() } }
+            val plan = BackfillScroll.plan(widthPx(), area.first, area.second,
+                towardOlder = false, step = BackfillScroll.COLLECT_STEP)
+                ?: return@requestScreen complete(BackfillStopReason.BOTTOM_UNCONFIRMED)
+            bottomSwipes++
+            scroll(plan) { schedule(SETTLE_MS) { stepToBottom() } }
+        }
     }
 
     // ---- collect older messages -----------------------------------------
@@ -90,30 +97,33 @@ internal class BackfillController(
     }
 
     private fun collectStep() {
-        if (!running()) return cancel()
-        val screen = readScreen() ?: return failRead { collectStep() }
-        readFailures = 0
-        lastArea = screen.viewportTop to screen.viewportBottom
+        if (finished || !running()) return cancel()
+        requestScreen { screen ->
+            if (finished) return@requestScreen
+            if (screen == null) return@requestScreen failRead { collectStep() }
+            readFailures = 0
+            lastArea = screen.viewportTop to screen.viewportBottom
 
-        acc.fold(screen.messages)
-        if (acc.lastAdded > 0 && !acc.lastAnchored) sawGap = true
-        val sig = ScreenSignature.of(screen.messages)
-        val moved = sig != lastSignature
-        lastSignature = sig
-        stale = if (acc.lastAdded > 0 || (moved && acc.lastAnchored)) 0 else stale + 1
-        emit()
+            acc.fold(screen.messages)
+            if (acc.lastAdded > 0 && !acc.lastAnchored) sawGap = true
+            val sig = ScreenSignature.of(screen.messages)
+            val moved = sig != lastSignature
+            lastSignature = sig
+            stale = if (acc.lastAdded > 0 || (moved && acc.lastAnchored)) 0 else stale + 1
+            emit()
 
-        if (!BackfillPlan.shouldContinue(acc.collected, target, swipes, stale)) {
-            return complete(reasonForStop())
+            if (!BackfillPlan.shouldContinue(acc.collected, target, swipes, stale)) {
+                return@requestScreen complete(reasonForStop())
+            }
+            // A gap gets one smaller re-read before we trust it.
+            val step = if (!acc.lastAnchored && acc.lastAdded > 0) BackfillScroll.RECOVERY_STEP
+                       else BackfillScroll.COLLECT_STEP
+            scrollOlder(step)
         }
-        // A gap gets one smaller re-read before we trust it.
-        val step = if (!acc.lastAnchored && acc.lastAdded > 0) BackfillScroll.RECOVERY_STEP
-                   else BackfillScroll.COLLECT_STEP
-        scrollOlder(step)
     }
 
     private fun scrollOlder(step: Float) {
-        if (!running()) return cancel()
+        if (finished || !running()) return cancel()
         val area = lastArea ?: return complete(BackfillStopReason.UNREADABLE)
         val plan = BackfillScroll.plan(widthPx(), area.first, area.second, towardOlder = true, step = step)
             ?: return complete(BackfillStopReason.UNREADABLE)
@@ -145,20 +155,23 @@ internal class BackfillController(
     }
 
     private fun stepReturn() {
-        if (!running()) return cancel()
+        if (finished || !running()) return cancel()
         if (returnSwipes >= BackfillPlan.MAX_RETURN_SWIPES) return build()
-        val screen = readScreen() ?: return failRead { stepReturn() }
-        readFailures = 0
-        val area = screen.viewportTop to screen.viewportBottom
-        val sig = ScreenSignature.of(screen.messages)
-        val stable = sig == lastSignature && area == lastArea
-        lastSignature = sig
-        lastArea = area
-        if (stable && returnSwipes > 0) return build()
-        val plan = BackfillScroll.plan(widthPx(), area.first, area.second,
-            towardOlder = false, step = BackfillScroll.COLLECT_STEP) ?: return build()
-        returnSwipes++
-        scroll(plan) { schedule(SETTLE_MS) { stepReturn() } }
+        requestScreen { screen ->
+            if (finished) return@requestScreen
+            if (screen == null) return@requestScreen failRead { stepReturn() }
+            readFailures = 0
+            val area = screen.viewportTop to screen.viewportBottom
+            val sig = ScreenSignature.of(screen.messages)
+            val stable = sig == lastSignature && area == lastArea
+            lastSignature = sig
+            lastArea = area
+            if (stable && returnSwipes > 0) return@requestScreen build()
+            val plan = BackfillScroll.plan(widthPx(), area.first, area.second,
+                towardOlder = false, step = BackfillScroll.COLLECT_STEP) ?: return@requestScreen build()
+            returnSwipes++
+            scroll(plan) { schedule(SETTLE_MS) { stepReturn() } }
+        }
     }
 
     // ---- termination -----------------------------------------------------
@@ -196,7 +209,7 @@ internal class BackfillController(
     }
 
     private fun schedule(delayMs: Long, block: () -> Unit) {
-        postDelayed(delayMs) { if (running()) block() }
+        postDelayed(delayMs) { if (!finished && running()) block() }
     }
 
     private fun emit() {

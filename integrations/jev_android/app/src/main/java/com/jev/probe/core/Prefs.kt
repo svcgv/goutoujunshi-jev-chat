@@ -165,6 +165,19 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
         get() = sp.getInt(K_CTX_COUNT, 30)
         set(v) = sp.edit().putInt(K_CTX_COUNT, v).apply()
 
+    /**
+     * Planning budget for one model request, in tokens. Covers judgment,
+     * strategy and reply routes. A conservative 8192 default is used when the
+     * user has not set a real window; it is a planning number, not a claim about
+     * what the configured proxy actually supports.
+     */
+    var modelContextWindow: Int
+        get() = sp.getInt(K_CTX_WINDOW, 8192)
+        set(v) = sp.edit().putInt(K_CTX_WINDOW, v.coerceIn(1024, 1_000_000)).apply()
+
+    internal fun tokenBudget(): com.jev.probe.jev.TokenBudget =
+        com.jev.probe.jev.TokenBudget(contextWindow = modelContextWindow.coerceIn(1024, 1_000_000))
+
     /** Auto-summarize a contact once enough history accumulates. */
     var autoSummary: Boolean
         get() = sp.getBoolean(K_AUTO_SUMMARY, true)
@@ -312,6 +325,7 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
         private const val K_SKILL_KB = "skill_knowledge_enabled"
         private const val K_TITLE_REGION = "title_region"
         private const val K_CTX_COUNT = "context_history_count"
+        private const val K_CTX_WINDOW = "model_context_window"
         private const val K_AUTO_SUMMARY = "auto_summary"
         private const val K_OCR_ENGINE = "ocr_engine"
         private const val K_OCR_UNKNOWN = "ocr_unknown_apps"

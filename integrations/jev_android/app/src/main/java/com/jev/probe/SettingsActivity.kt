@@ -368,6 +368,13 @@ class SettingsActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_NUMBER
         }
         card2.addView(ctxCountEdit)
+        card2.addView(label("模型上下文窗口（tokens，1 024–1 000 000）"))
+        val ctxWindowEdit = edit(prefs.modelContextWindow.toString(), "8192").apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        card2.addView(ctxWindowEdit)
+        card2.addView(text("用于估算每次分析能带多少对话。留默认 8192 即可；若代理实际窗口更小，" +
+            "过长对话会改为分段提取要点后再分析，核对原文不受影响。", 11f, sub))
         card2.addView(cardBtn("知识库与联系人") {
             startActivity(android.content.Intent(this, KnowledgeActivity::class.java))
         })
@@ -506,6 +513,8 @@ class SettingsActivity : AppCompatActivity() {
             prefs.contextEnabled = (ctxRow.tag as? Boolean) ?: false
             prefs.contextHistoryCount =
                 ctxCountEdit.text.toString().trim().toIntOrNull()?.coerceIn(0, 100) ?: 30
+            prefs.modelContextWindow =
+                ctxWindowEdit.text.toString().trim().toIntOrNull()?.coerceIn(1024, 1_000_000) ?: 8192
             prefs.overlayOpacity = seek.progress + 60
             Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
         })

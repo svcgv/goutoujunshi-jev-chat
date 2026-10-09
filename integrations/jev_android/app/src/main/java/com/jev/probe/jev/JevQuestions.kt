@@ -12,6 +12,8 @@ import org.json.JSONObject
  * already refer to "the other person" throughout).
  */
 object JevQuestions {
+    /** Token share for the state transcript when the caller does not override it. */
+    private const val DEFAULT_TRANSCRIPT_TOKENS = 6000
 
     /**
      * Appended to every question so the D-stage `background` field (relationship,
@@ -181,18 +183,26 @@ object JevQuestions {
         snapshot: ChatSnapshot,
         relationship: String,
         background: String = "",
-        history: List<LogEntry> = emptyList()
+        history: List<LogEntry> = emptyList(),
+        transcriptBudgetTokens: Int = DEFAULT_TRANSCRIPT_TOKENS
     ): JSONObject {
+        // Keep the newest messages that fit the budget instead of a fixed count,
+        // so a long reviewed window is not silently clipped to the last 10.
+        val selected = newestFitting(snapshot.messages, transcriptBudgetTokens)
+        val dropped = snapshot.messages.size - selected.size
         val msgs = JSONArray()
-        val last10 = snapshot.messages.takeLast(10)
-        for (m in last10) {
+        for (m in selected) {
             msgs.put(JSONObject().put("from", m.side).put("text", m.text))
         }
         val chat = JSONObject()
             .put("relationship", relationship)
             .put("messages", msgs)
-            .put("latest_from", last10.lastOrNull()?.side ?: "other")
+            .put("latest_from", selected.lastOrNull()?.side ?: "other")
         val state = JSONObject().put("chat", chat)
+        if (dropped > 0) {
+            state.put("transcript_notice",
+                "本轮共 ${snapshot.messages.size} 条，其中最早 $dropped 条因预算未逐条发送；核对原文未改变。")
+        }
         if (background.isNotBlank()) state.put("background", background)
         if (history.isNotEmpty()) {
             val h = JSONArray()
@@ -200,6 +210,20 @@ object JevQuestions {
             state.put("history", h)
         }
         return state
+    }
+
+    /** The newest messages whose combined estimate stays within [budget]. */
+    private fun newestFitting(messages: List<com.jev.probe.core.Msg>, budget: Int): List<com.jev.probe.core.Msg> {
+        if (messages.isEmpty()) return messages
+        var used = 0
+        var from = messages.size
+        for (i in messages.indices.reversed()) {
+            val t = TokenEstimator.estimate(messages[i].text) + 8
+            if (used + t > budget && from < messages.size) break
+            used += t
+            from = i
+        }
+        return messages.subList(from, messages.size).toList()
     }
 
     /** The best_reply ranking question over exactly 3 candidates (Chinese text kept). */

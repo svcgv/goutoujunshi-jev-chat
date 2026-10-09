@@ -2,6 +2,7 @@ package com.jev.probe.jev
 
 import com.jev.probe.core.*
 import com.jev.probe.core.kb.*
+import org.json.JSONArray
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -34,5 +35,22 @@ class StrategyInputTest {
         assertEquals("朋友", payload.getString("relationship"))
         assertFalse(payload.has("background"))
         assertFalse(payload.has("history"))
+    }
+
+    @Test fun preparedTranscriptReplacesTheTruncatedArrayAndCarriesTheNotice() {
+        val long = Msg("other", "长".repeat(1200))
+        val snap = ChatSnapshot("同事甲", listOf(long))
+        val prepared = ContextPreparer(TokenBudget(contextWindow = 4096)).prepare(
+            primary = snap.messages, history = emptyList(), overheadTokens = 0,
+            render = ConversationPayload::render, summarize = { it.take(20) })
+        val payload = StrategyInput.build(snap, "同事", null, 30, prepared)
+        // The transcript is a single string, so it is not clipped per message.
+        assertTrue(payload.getString("transcript").contains(long.text))
+        assertEquals(false, payload.getBoolean("compressed"))
+    }
+
+    @Test fun legacyShapeIsKeptWhenNoPreparedTranscriptIsSupplied() {
+        val payload = StrategyInput.build(snapshot, "伴侣", context, 30)
+        assertTrue(payload.get("transcript") is JSONArray)
     }
 }

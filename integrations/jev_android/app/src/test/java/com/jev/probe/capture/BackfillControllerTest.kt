@@ -2,6 +2,7 @@ package com.jev.probe.capture
 
 import com.jev.probe.core.Msg
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -108,9 +109,33 @@ class BackfillControllerTest {
             progress = {},
             onFinish = { out = it })
         controller.start()
-        // retry() keeps rescheduling while the screen is null; cancel by flipping running().
-        sched.runAll(limit = 500)
-        // No finish yet (still retrying) is acceptable; the key is it did not crash
-        // and did not spin without limit.
+        sched.runAll(limit = 5_000)
+        assertNotNull("the run must terminate when no screen is readable", out)
+        assertEquals(BackfillStopReason.BOTTOM_UNCONFIRMED, out!!.stopReason)
+        assertTrue(out!!.messages.isEmpty())
+    }
+
+    @Test fun anUnreadableScreenDuringCollectionStopsWithUnreadable() {
+        val sched = FakeScheduler()
+        val chat = FakeChat(total = 100, window = 10, end = 100)
+        var out: BackfillResult? = null
+        var reads = 0
+        val controller = BackfillController(
+            options = BackfillOptions(50),
+            postDelayed = sched::post,
+            readScreen = {
+                reads++
+                // Reach the bottom (needs two identical reads), then go blind.
+                if (reads <= 4) chat.screen() else null
+            },
+            scroll = { _, done -> done() },
+            widthPx = { 1000 },
+            running = { out == null },
+            progress = {},
+            onFinish = { out = it })
+        controller.start()
+        sched.runAll(limit = 5_000)
+        assertNotNull(out)
+        assertEquals(BackfillStopReason.UNREADABLE, out!!.stopReason)
     }
 }

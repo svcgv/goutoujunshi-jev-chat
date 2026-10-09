@@ -4,13 +4,13 @@
 
 # Goutoujunshi Jev Chat
 
-**Goutoujunshi beside your chat window: screen reading, analysis, and reply drafts.** This standalone project builds on [Goutoujunshi](https://github.com/shengjidaguai-china/goutoujunshi). The public downloads are a Mac source preview, a Windows preview ZIP, and an Android debug APK. The Android supports WeChat one-to-one chats; system capture or screenshot import is available when accessibility reading fails. Windows and Android still need device-level validation. You decide whether to send every draft.
+**Goutoujunshi beside your chat window: screen reading, analysis, and reply drafts.** This standalone project builds on [Goutoujunshi](https://github.com/shengjidaguai-china/goutoujunshi). The public downloads are a Mac source preview, a Windows preview ZIP, and an Android debug APK. The Android supports WeChat one-to-one chats; automatic history backfill or screenshot import is available when accessibility reading fails. Windows and Android still need device-level validation. You decide whether to send every draft.
 
 If it helps you, [Star the project](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/stargazers) so you can find it again and help others discover it.
 
 ## This fork: Android CLI-Proxy-API support (no Jev required)
 
-Android strategy judgment and candidate ranking can use a configurable OpenAI-compatible Chat Completions proxy and the actual DeepSeek / GPT model IDs exposed by that proxy. Reply generation is configured independently; existing Jev and official DeepSeek routes remain available. See the [Android proxy setup guide (Chinese)](integrations/jev_android/CLI_PROXY_API.md). Upstream release APKs do not contain these local changes. This fork adds WeChat one-to-one capture, explicit object binding, reviewed local history, system-capture consent, and screenshot import; device validation is still required.
+Android strategy judgment and candidate ranking can use a configurable OpenAI-compatible Chat Completions proxy and the actual DeepSeek / GPT model IDs exposed by that proxy. Reply generation is configured independently; existing Jev and official DeepSeek routes remain available. See the [Android proxy setup guide (Chinese)](integrations/jev_android/CLI_PROXY_API.md). Upstream release APKs do not contain these local changes. This fork adds WeChat one-to-one capture, explicit object binding, reviewed local history, bounded automatic history backfill (scrolls to the conversation bottom, then reads the newest 50 messages), and screenshot import; device validation is still required.
 
 ## Latest update: Android review, cancellation, and DeepSeek context
 

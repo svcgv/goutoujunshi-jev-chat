@@ -4,7 +4,7 @@
 
 # 狗头军师 Jev Chat
 
-**聊天窗口旁的狗头军师：读屏、分析、生成回复草稿。** 这是从[狗头军师](https://github.com/shengjidaguai-china/goutoujunshi)延伸出来的独立项目。目前公开提供 Mac 源码预览包、Windows 预览 ZIP 和 Android 调试 APK。Android 版支持微信一对一聊天；无法读取时可用系统授权截屏或导入截图；Windows 和 Android 仍需实机测试。发送始终由用户决定。
+**聊天窗口旁的狗头军师：读屏、分析、生成回复草稿。** 这是从[狗头军师](https://github.com/shengjidaguai-china/goutoujunshi)延伸出来的独立项目。目前公开提供 Mac 源码预览包、Windows 预览 ZIP 和 Android 调试 APK。Android 版支持微信一对一聊天；无法读取时可用自动补录会话历史或导入截图；Windows 和 Android 仍需实机测试。发送始终由用户决定。
 
 如果这套聊天副驾对你有用，可以给[项目点一个 Star](https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/stargazers)，方便以后找到，也让更多有相同需求的人看到它。
 
@@ -49,7 +49,7 @@ Android 仍处于预览阶段；本 fork 已加入实验性微信一对一采集
 
 ### Android：安装调试 APK
 
-在 Android 11 或更新版本上下载 APK，允许系统安装此来源的应用后安装。旧版调试 APK 若因签名不同无法覆盖安装，需先卸载旧包；卸载会清除本机应用设置。打开应用，选择 Jev 或 DeepSeek 策略判断，配置回复模型；截图识图可选本地 ML Kit 或视觉模型（DeepSeek Flash、OpenRouter 等）。按界面提示授予无障碍、悬浮窗权限；首次安装时助手和自动分析默认关闭，需要主动开启。识别后先核对原文与双方身份，再确认分析。**Android 支持微信一对一聊天；若无障碍读取失败，可从悬浮助手发起系统授权截屏或导入普通聊天截图。** 请勿把 Mac 版微信旁的截图理解为 Android 效果；QQ、X、飞书等路径也仍需在对应设备上验证。应用只生成草稿，发送由你决定。
+在 Android 11 或更新版本上下载 APK，允许系统安装此来源的应用后安装。旧版调试 APK 若因签名不同无法覆盖安装，需先卸载旧包；卸载会清除本机应用设置。打开应用，选择 Jev 或 DeepSeek 策略判断，配置回复模型；截图识图可选本地 ML Kit 或视觉模型（DeepSeek Flash、OpenRouter 等）。按界面提示授予无障碍、悬浮窗权限；首次安装时助手和自动分析默认关闭，需要主动开启。识别后先核对原文与双方身份，再确认分析。**Android 支持微信一对一聊天；若无障碍读取失败，可从悬浮助手发起「自动补录会话历史」（回到会话底部后自动向上读取最近 50 条），或导入普通聊天截图。** 请勿把 Mac 版微信旁的截图理解为 Android 效果；QQ、X、飞书等路径也仍需在对应设备上验证。应用只生成草稿，发送由你决定。
 
 ### Windows：解压 ZIP
 

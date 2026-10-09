@@ -768,6 +768,14 @@ open class ChatCaptureService : AccessibilityService() {
             ?: run { overlay?.showError("当前不在可识别的聊天窗口"); return }
         if (live.isGroup) { overlay?.showError("暂不支持群聊"); return }
         if (!prefs.isAllowed(live.title)) { overlay?.showError("此会话不在白名单内"); return }
+        // Automatic backfill drives many screens; it needs node-readable text to
+        // tell bubbles apart. When the tree carries nothing, do not start a run
+        // that is guaranteed to stop unreadable — point at the one-shot paths.
+        if (live.messages.none { it.text.isNotBlank() }) {
+            overlay?.showError("当前窗口读不到文字，自动补录需要可读的聊天节点；" +
+                "请改用「截屏识别一次」或「导入聊天截图」")
+            return
+        }
         activePkg = pkg
         val title = live.title?.takeUnless { isTransientTitle(it) } ?: manualWindowTitle
         overlay?.showBackfillPrompt(title, BackfillPlan.TARGET_MESSAGES,

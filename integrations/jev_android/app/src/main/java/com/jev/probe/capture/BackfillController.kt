@@ -44,6 +44,7 @@ internal class BackfillController(
     private var lastArea: Pair<Int, Int>? = null
     private var finished = false
     private var sawGap = false
+    private var readFailures = 0
     private var stopReason: BackfillStopReason = BackfillStopReason.HISTORY_TOP
 
     fun start() {
@@ -60,7 +61,8 @@ internal class BackfillController(
         if (bottomSwipes >= BackfillPlan.MAX_BOTTOM_SWIPES) {
             return complete(BackfillStopReason.BOTTOM_UNCONFIRMED)
         }
-        val screen = readScreen() ?: return retry { stepToBottom() }
+        val screen = readScreen() ?: return failRead { stepToBottom() }
+        readFailures = 0
         val area = screen.viewportTop to screen.viewportBottom
         val sig = ScreenSignature.of(screen.messages)
         val stable = sig == lastSignature && area == lastArea
@@ -89,7 +91,8 @@ internal class BackfillController(
 
     private fun collectStep() {
         if (!running()) return cancel()
-        val screen = readScreen() ?: return retry { collectStep() }
+        val screen = readScreen() ?: return failRead { collectStep() }
+        readFailures = 0
         lastArea = screen.viewportTop to screen.viewportBottom
 
         acc.fold(screen.messages)
@@ -129,6 +132,8 @@ internal class BackfillController(
 
     private fun complete(reason: BackfillStopReason) {
         if (reason == BackfillStopReason.CANCELED) return cancel()
+        // Already returning: a failure here must finish, not restart the return.
+        if (phase == BackfillPhase.RETURNING) return build()
         stopReason = reason
         phase = BackfillPhase.RETURNING
         // Reset the stability baseline: the first return read is the same screen
@@ -142,7 +147,8 @@ internal class BackfillController(
     private fun stepReturn() {
         if (!running()) return cancel()
         if (returnSwipes >= BackfillPlan.MAX_RETURN_SWIPES) return build()
-        val screen = readScreen() ?: return retry { stepReturn() }
+        val screen = readScreen() ?: return failRead { stepReturn() }
+        readFailures = 0
         val area = screen.viewportTop to screen.viewportBottom
         val sig = ScreenSignature.of(screen.messages)
         val stable = sig == lastSignature && area == lastArea
@@ -174,8 +180,18 @@ internal class BackfillController(
         finished = true
     }
 
-    private fun retry(again: () -> Unit) {
+    /**
+     * A single unreadable frame is worth retrying; a screen that stays unreadable
+     * (empty node tree, protected window, wrong window) must terminate the run
+     * instead of rescheduling forever.
+     */
+    private fun failRead(again: () -> Unit) {
         if (!running()) return cancel()
+        readFailures++
+        if (readFailures > MAX_READ_FAILURES) {
+            if (phase == BackfillPhase.COLLECTING) return complete(BackfillStopReason.UNREADABLE)
+            return complete(BackfillStopReason.BOTTOM_UNCONFIRMED)
+        }
         schedule(RETRY_MS, again)
     }
 
@@ -190,5 +206,8 @@ internal class BackfillController(
     companion object {
         const val SETTLE_MS = 350L
         const val RETRY_MS = 200L
+
+        /** Consecutive unreadable frames tolerated before the run gives up. */
+        const val MAX_READ_FAILURES = 10
     }
 }

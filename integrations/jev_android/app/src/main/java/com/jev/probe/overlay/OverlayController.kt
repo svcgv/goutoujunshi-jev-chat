@@ -389,9 +389,16 @@ class OverlayController(private val ctx: Context) {
         panelRoot?.let { runCatching { wm.updateViewLayout(it, params) } }
     }
 
+    /**
+     * Hide the panel without deciding anything.
+     *
+     * This used to invoke [reviewCancel], so merely tapping the bubble to fold
+     * the panel cancelled the pending review — and the backfill review's cancel
+     * path tears the tracked conversation down, leaving the next open claiming
+     * the chat was unbound. Hiding a panel is not a decision; explicit cancel
+     * buttons and conversation switches own that.
+     */
     private fun collapsePanel() {
-        reviewCancel?.invoke()
-        reviewCancel = null
         setPanelFocusable(false)
         panel?.visibility = View.GONE
         panelRoot?.visibility = View.GONE
@@ -743,6 +750,7 @@ class OverlayController(private val ctx: Context) {
      * could fill the wrong chat's input box.
      */
     fun resetForNewConversation() {
+        runCatching { com.jev.probe.CrashLogger.diag(ctx, "overlay resetForNewConversation") }
         reviewCancel = null
         bindingSummary = "未绑定对象 · 不加载历史"
         lastJudgment = null

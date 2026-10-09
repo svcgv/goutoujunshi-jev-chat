@@ -51,3 +51,39 @@ class HistoryMergeTest {
         assertEquals(4, r.entries.size)
     }
 }
+
+/**
+ * A backfill reads a WIDER window than the few lines saved earlier, so the
+ * stored rows usually sit inside the new batch — which must not make the merge
+ * treat the batch as older and push them to the end.
+ */
+class HistoryMergeWideningTest {
+
+    private fun e(text: String) = LogEntry("other", text, 0L, "app")
+
+    @Test fun aBatchThatContainsTheStoredTimelineReplacesItInOrder() {
+        val existing = listOf(e("m4"), e("m5"))                        // saved last time
+        val batch = listOf(e("m1"), e("m2"), e("m3"), e("m4"), e("m5"), e("m6")) // backfill now
+        val r = HistoryMerge.insert(existing, batch)
+        assertTrue(r.anchored)
+        assertEquals(listOf("m1", "m2", "m3", "m4", "m5", "m6"), r.entries.map { it.text })
+        assertEquals(4, r.inserted)
+    }
+
+    @Test fun theOlderStoredRowsNeverEndUpLast() {
+        val existing = listOf(e("a"), e("b"))
+        val batch = listOf(e("a"), e("b"), e("c"))
+        val r = HistoryMerge.insert(existing, batch)
+        assertEquals("c", r.entries.last().text)
+        assertTrue(r.anchored)
+    }
+
+    @Test fun aBatchStillPrependingOlderHistoryKeepsWorking() {
+        // The batch is genuinely older content that merely overlaps the start.
+        val existing = listOf(e("c"), e("d"), e("e"))
+        val batch = listOf(e("a"), e("b"), e("c"), e("d"))
+        val r = HistoryMerge.insert(existing, batch)
+        assertEquals(listOf("a", "b", "c", "d", "e"), r.entries.map { it.text })
+        assertTrue(r.anchored)
+    }
+}

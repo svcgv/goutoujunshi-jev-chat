@@ -29,6 +29,17 @@ internal object HistoryMerge {
         // A. The exact batch is already stored: idempotent re-run.
         if (indexOfSlice(existing, older) >= 0) return Result(existing, 0, true)
 
+        // B. The stored timeline sits INSIDE the batch. A backfill reads a wider
+        //    window of the same conversation, so this is the common case — and it
+        //    must be handled before the "no overlap" branch, which would otherwise
+        //    treat the batch as older and push the stored (older) rows to the END,
+        //    leaving the history looking like the old messages came last.
+        val coveredAt = indexOfSlice(older, existing)
+        if (coveredAt >= 0) {
+            val added = (older.size - existing.size).coerceAtLeast(0)
+            return Result(older, added, true)
+        }
+
         // B. older's tail overlaps existing's head → older content goes in front.
         for (k in minOf(older.size, existing.size) downTo 1) {
             if (matches(older, older.size - k, existing, 0, k)) {

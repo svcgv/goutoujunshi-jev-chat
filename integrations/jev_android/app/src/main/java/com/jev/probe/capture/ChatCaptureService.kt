@@ -1353,16 +1353,25 @@ open class ChatCaptureService : AccessibilityService() {
             CrashLogger.diag(this, "confirmBackfill aborted: confirmReview refused")
             return
         }
-        overlay?.showLoading()
         val snapshot = ChatSnapshot(identityTitle, messages,
             note = "自动补录 · 原文与说话人已人工核对")
         currentSnapshot = snapshot
         activePkg = pkg
-        updateBindingSummary(snapshot, pkg)
         lastAnalysis = null; lastAnalyzedSnapshot = null; lastContext = null
-        if (prefs.contextEnabled && !KbStore.get(this).rememberBackfill(binding.contactId, pkg, messages)) {
+        // Persist FIRST, then tell the panel what happened:
+        //  - a failed save must not be dressed up as "分析中…", and
+        //  - the "已存 N 条" line has to be computed AFTER the write, or it keeps
+        //    showing the pre-save count and looks like nothing was saved.
+        val store = KbStore.get(this)
+        val before = store.logSize(binding.contactId)
+        if (prefs.contextEnabled && !store.rememberBackfill(binding.contactId, pkg, messages)) {
+            CrashLogger.diag(this, "confirmBackfill aborted: save failed")
             overlay?.showError("历史保存失败，本轮未调用模型，请重试"); return
         }
+        CrashLogger.diag(this, "confirmBackfill saved contextEnabled=${prefs.contextEnabled} " +
+            "entries=$before->${store.logSize(binding.contactId)}")
+        updateBindingSummary(snapshot, pkg)
+        overlay?.showLoading()
         pendingSnapshot = snapshot
         runAnalysis(token)
     }

@@ -1115,7 +1115,23 @@ open class ChatCaptureService : AccessibilityService() {
         ocr.recognize(bmp, region) { lines ->
             bmp.recycle()
             if (!backfillActive) { cb(BackfillRead.Unreadable); return@recognize }
-            val msgs = groupOcrLines(lines)
+            // Give OCR text a speaker from where it sits, so a hidden node tree
+            // no longer forces the user to label every row by hand:
+            //  1. match the text to the bubble rectangles the tree did expose;
+            //  2. otherwise decide each bubble's side from its left/right edge,
+            //     which is the same rule the node path uses;
+            //  3. only if neither works, fall back to "待确认" for everything.
+            val rects = live?.bubbleRects.orEmpty()
+            val byRect = OcrAttribution.assign(lines, rects)
+            val byPosition = byRect ?: OcrAttribution.groupByPosition(lines, resources.displayMetrics.widthPixels)
+                .takeIf { it.isNotEmpty() }
+            val msgs = byPosition ?: groupOcrLines(lines)
+            CrashLogger.diag(this, "ocr frame lines=${lines.size} rects=${rects.size} " +
+                "path=" + when {
+                    byRect != null -> "rects"
+                    byPosition != null -> "position"
+                    else -> "unknown"
+                } + " msgs=${msgs.size} unknown=${msgs.count { it.side == "unknown" }}")
             if (msgs.isEmpty()) cb(BackfillRead.Unreadable)
             else cb(BackfillRead.Screen(BackfillScreen(msgs, band.first, band.second)))
         }

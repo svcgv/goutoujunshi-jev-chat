@@ -68,6 +68,8 @@ class OverlayController(private val ctx: Context) {
     private var panelLp: WindowManager.LayoutParams? = null
     /** Header back control, shown only while a sub-page is open. */
     private var backButton: TextView? = null
+    /** Scrolling content host, so a page can scroll to a specific row. */
+    private var contentScroll: ScrollView? = null
     private var expanded = false
 
     var onManualAnalyze: (() -> Unit)? = null
@@ -267,6 +269,7 @@ class OverlayController(private val ctx: Context) {
         scroll.addView(content)
         p.addView(scroll)
         contentBox = content
+        contentScroll = scroll
         panel = p
         return p
     }
@@ -595,6 +598,18 @@ class OverlayController(private val ctx: Context) {
         val rows = ArrayList<Row>()
         val usedOcr = result.messages.any { it.side == "unknown" }
 
+        // Shown in the page (not as a fleeting toast) when the transcript is not
+        // ready to analyse yet. The confirm button sits at the very bottom of a
+        // long list, so a toast there was easy to miss entirely.
+        val warning = TextView(ctx).apply {
+            setTextColor(Color.parseColor("#B45309"))
+            textSize = 12f
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            background = card(8, Color.parseColor("#FEF3C7"))
+            visibility = View.GONE
+        }
+
+
         /** Push every editor's current text back into the model. */
         fun capture() {
             rows.forEach { it.item.text = it.editor.text.toString() }
@@ -614,6 +629,8 @@ class OverlayController(private val ctx: Context) {
                     setOnClickListener {
                         item.side = nextSide(item.side)
                         text = reviewHeader(index, item.side, item.completeness)
+                        // The user is fixing exactly what the warning asked for.
+                        if (model.none { it.side == "unknown" }) warning.visibility = View.GONE
                     }
                 }
                 val editor = EditText(ctx).apply {
@@ -667,7 +684,7 @@ class OverlayController(private val ctx: Context) {
                     model.removeAt(index)
                     render()
                 })
-                rows.add(Row(item, editor))
+                rows.add(Row(item, editor, header))
                 container.addView(header)
                 container.addView(editor)
                 container.addView(actions)
@@ -684,13 +701,22 @@ class OverlayController(private val ctx: Context) {
         val confirm = bigButton("确认原文并分析") {
             capture()
             val msgs = collect()
+            val pending = msgs.count { it.side == "unknown" }
             runCatching {
-                com.jev.probe.CrashLogger.diag(ctx, "review confirm tapped msgs=${msgs.size} " +
-                    "unknown=${msgs.count { it.side == "unknown" }}")
+                com.jev.probe.CrashLogger.diag(ctx, "review confirm tapped msgs=${msgs.size} unknown=$pending")
             }
             when {
                 msgs.isEmpty() -> toast("至少保留一条消息")
-                msgs.any { it.side == "unknown" } -> toast("请点击每一行把“待确认”改成我或对方")
+                pending > 0 -> {
+                    val first = model.indexOfFirst { it.side == "unknown" }.coerceAtLeast(0)
+                    warning.text = "还有 $pending 条身份未确认（从第 ${first + 1} 条开始）。" +
+                        "点每行标题切换「我／对方」，全部确认后这里才能开始分析。"
+                    warning.visibility = View.VISIBLE
+                    // Take the user to the first row that still needs a decision.
+                    rows.getOrNull(first)?.header?.let { target ->
+                        contentScroll?.post { contentScroll?.smoothScrollTo(0, target.top) }
+                    }
+                }
                 else -> { releaseFocus(); onConfirm(msgs) }
             }
         }
@@ -711,6 +737,7 @@ class OverlayController(private val ctx: Context) {
             hint(result.summary()),
             hint("核对时可直接滑动微信对照原文；点某条正文才开始编辑，点标题「核对本轮对话」退出编辑。"),
             hint("点击每条标题切换 我／对方；正文下方可拆分、与下一条合并或删除。"),
+            warning,
             if (usedOcr)
                 hint("本次包含本地 OCR 结果：说话人无法自动判断，带「待确认」的每一条都必须手动指定我／对方。")
             else hint(""),
@@ -729,7 +756,7 @@ class OverlayController(private val ctx: Context) {
         val completeness: MessageCompleteness
     )
 
-    private class Row(val item: ReviewItem, val editor: EditText)
+    private class Row(val item: ReviewItem, val editor: EditText, val header: TextView)
 
     /** Small inline button used by the split / merge / delete strip. */
     private fun smallAction(label: String, onClick: () -> Unit) = TextView(ctx).apply {

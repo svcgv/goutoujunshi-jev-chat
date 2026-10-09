@@ -171,6 +171,10 @@ class WeChatAdapter : ChatAppAdapter {
     override fun extract(root: AccessibilityNodeInfo, res: Resources): ChatSnapshot? {
         val width = res.displayMetrics.widthPixels
         val bubbles = ArrayList<Triple<Int, Int, String>>() // top, centerX, text
+        // Geometry for every bubble, with the speaker its position implies. Kept
+        // even when the text is hidden, so the OCR fallback can still tell who
+        // said what instead of marking the whole screen "待确认".
+        val rects = ArrayList<BubbleRect>()
         var firstBubbleTop = Int.MAX_VALUE
         var isChat = false
         var composer = false
@@ -191,8 +195,11 @@ class WeChatAdapter : ChatAppAdapter {
             if (id == COMPOSER_ID && bounds.height() > 0) composerTop = bounds.top
             if (id == BUBBLE_ID) {
                 isChat = true
+                val b = Rect(); node.getBoundsInScreen(b)
+                if (b.height() > 0 && b.width() > 0) {
+                    rects.add(BubbleRect(Rect(b), if (b.centerX() > width / 2) "me" else "other"))
+                }
                 if (!text.isNullOrBlank()) {
-                    val b = Rect(); node.getBoundsInScreen(b)
                     bubbles.add(Triple(b.top, b.centerX(), text))
                     if (b.top < firstBubbleTop) firstBubbleTop = b.top
                 }
@@ -205,7 +212,7 @@ class WeChatAdapter : ChatAppAdapter {
         val top = firstBubbleTop.takeIf { it != Int.MAX_VALUE }
         if (bubbles.isEmpty()) {
             return if (isChat || composer)
-                ChatSnapshot(title, emptyList(), isGroup = group,
+                ChatSnapshot(title, emptyList(), bubbleRects = rects, isGroup = group,
                     viewportTop = top, viewportBottom = composerTop, listAtEnd = ListEndSignal.detect(root))
             else null
         }
@@ -213,7 +220,7 @@ class WeChatAdapter : ChatAppAdapter {
         val msgs = bubbles.map { (_, cx, text) ->
             Msg(if (cx > width / 2) "me" else "other", text)
         }
-        return ChatSnapshot(title, msgs, isGroup = group,
+        return ChatSnapshot(title, msgs, bubbleRects = rects, isGroup = group,
             viewportTop = top, viewportBottom = composerTop, listAtEnd = ListEndSignal.detect(root))
     }
 
@@ -248,6 +255,9 @@ class QQAdapter : ChatAppAdapter {
         val width = res.displayMetrics.widthPixels
         // top, left, right, text
         val bubbles = ArrayList<Bubble>()
+        // Bubble geometry for the OCR fallback, kept even when text is hidden.
+        val rects = ArrayList<BubbleRect>()
+        val avatarEdge = (width * 0.13).toInt()
         var title: String? = null
         var hasInput = false
 
@@ -259,9 +269,16 @@ class QQAdapter : ChatAppAdapter {
             val node = stack.removeLast()
             val id = node.viewIdResourceName
             val text = node.text?.toString()
-            if (id == BUBBLE_ID && !text.isNullOrBlank()) {
+            if (id == BUBBLE_ID) {
                 val b = Rect(); node.getBoundsInScreen(b)
-                bubbles.add(Bubble(b.top, b.left, b.right, text))
+                if (b.height() > 0 && b.width() > 0) {
+                    val dl = kotlin.math.abs(b.left - avatarEdge)
+                    val dr = kotlin.math.abs((width - avatarEdge) - b.right)
+                    rects.add(BubbleRect(Rect(b), if (dr < dl) "me" else "other"))
+                }
+                if (!text.isNullOrBlank()) {
+                    bubbles.add(Bubble(b.top, b.left, b.right, text))
+                }
             }
             if (!hasInput && id == INPUT_ID) hasInput = true
             if (id == TITLE_ID && title == null) text?.let { if (it.isNotBlank()) title = it }
@@ -270,16 +287,17 @@ class QQAdapter : ChatAppAdapter {
         if (bubbles.isEmpty() && !hasInput) return null
 
         if (title == null) title = findTitleInActionBar(root, width, res)
-        if (bubbles.isEmpty()) return ChatSnapshot(title, emptyList(), listAtEnd = ListEndSignal.detect(root))
+        if (bubbles.isEmpty())
+            return ChatSnapshot(title, emptyList(), bubbleRects = rects,
+                listAtEnd = ListEndSignal.detect(root))
 
-        val avatarEdge = (width * 0.13).toInt()
         bubbles.sortBy { it.top }
         val msgs = bubbles.map { b ->
             val dl = kotlin.math.abs(b.left - avatarEdge)
             val dr = kotlin.math.abs((width - avatarEdge) - b.right)
             Msg(if (dr < dl) "me" else "other", b.text)
         }
-        return ChatSnapshot(title, msgs, listAtEnd = ListEndSignal.detect(root))
+        return ChatSnapshot(title, msgs, bubbleRects = rects, listAtEnd = ListEndSignal.detect(root))
     }
 
     private data class Bubble(val top: Int, val left: Int, val right: Int, val text: String)

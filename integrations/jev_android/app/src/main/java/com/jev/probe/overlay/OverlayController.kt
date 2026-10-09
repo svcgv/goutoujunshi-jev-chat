@@ -68,6 +68,8 @@ class OverlayController(private val ctx: Context) {
     private var panelLp: WindowManager.LayoutParams? = null
     /** Header back control, shown only while a sub-page is open. */
     private var backButton: TextView? = null
+    /** Title the current page belongs to, so a sub-page can return to the chat. */
+    private var lastTitle: String? = null
     /** Scrolling content host, so a page can scroll to a specific row. */
     private var contentScroll: ScrollView? = null
     private var expanded = false
@@ -430,6 +432,7 @@ class OverlayController(private val ctx: Context) {
     // ------------------------------------------------------------ public API
 
     fun showIdle(title: String?) {
+        if (!title.isNullOrBlank()) lastTitle = title
         ensureRoot(); ensurePanel(); bubble?.alpha = 0.55f
         // Either there is genuinely nothing to show yet, or the panel is empty
         // for some other reason (root got rebuilt after hide(), leaving
@@ -456,6 +459,7 @@ class OverlayController(private val ctx: Context) {
     fun showBinding(title: String, contacts: List<Contact>, selectedId: String?, remember: Boolean,
                     onSave: (String?, String, Boolean) -> Unit, onUnbind: () -> Unit,
                     onClear: () -> Unit, onCancel: () -> Unit) {
+        if (!title.isNullOrBlank()) lastTitle = title
         ensureRoot(); ensurePanel()
         val picker = Spinner(ctx).apply {
             adapter = ArrayAdapter(ctx, android.R.layout.simple_spinner_dropdown_item,
@@ -466,25 +470,34 @@ class OverlayController(private val ctx: Context) {
         val consent = CheckBox(ctx).apply { text = "保存核对后的消息并在分析时使用历史（本机存储）"; isChecked = remember }
         val identity = CheckBox(ctx).apply { text = "确认这是同一对象的一对一会话；同名会话请先在聊天软件设唯一备注" }
         reviewCancel = onCancel
-        setContent(listOf(line("绑定：$title", "#24382d", 16f, true), picker, name, consent, identity,
-            hint("仅采集已核对的可见消息；不读取完整微信记录。跨应用只有手动选同一对象才共享档案。"),
-            bigButton("确认绑定") {
-                if (!identity.isChecked || (picker.selectedItemPosition == 0 && name.text.isBlank())) {
-                    toast("请填写称呼并确认会话身份")
-                } else {
-                    finishReview(); releaseFocus()
-                    val selected = contacts.getOrNull(picker.selectedItemPosition - 1)
-                    onSave(selected?.id, name.text.toString().trim().ifBlank { selected?.name.orEmpty() }, consent.isChecked)
-                }
-            },
-            actionGroup(listOf(
-                "解除当前绑定" to { finishReview(); releaseFocus(); onUnbind() },
-                "清空此对象历史（需确认）" to {
-                    setContent(listOf(hint("删除此对象已保存的聊天历史，不能恢复；绑定与档案保留。"),
-                        bigButton("确认清空") { finishReview(); releaseFocus(); onClear() },
-                        actionGroup(listOf("取消" to { finishReview(); releaseFocus(); onCancel() }))))
+
+        /** The binding page itself, so the sub-pages below have somewhere to return to. */
+        fun renderBinding() {
+            setContent(listOf(line("绑定：$title", "#24382d", 16f, true), picker, name, consent, identity,
+                hint("仅采集已核对的可见消息；不读取完整微信记录。跨应用只有手动选同一对象才共享档案。"),
+                bigButton("确认绑定") {
+                    if (!identity.isChecked || (picker.selectedItemPosition == 0 && name.text.isBlank())) {
+                        toast("请填写称呼并确认会话身份")
+                    } else {
+                        finishReview(); releaseFocus()
+                        val selected = contacts.getOrNull(picker.selectedItemPosition - 1)
+                        onSave(selected?.id, name.text.toString().trim().ifBlank { selected?.name.orEmpty() }, consent.isChecked)
+                    }
                 },
-                "取消" to { finishReview(); releaseFocus(); onCancel() }))))
+                actionGroup(listOf(
+                    "解除当前绑定" to { finishReview(); releaseFocus(); onUnbind() },
+                    "清空此对象历史（需确认）" to {
+                        setContent(listOf(hint("删除此对象已保存的聊天历史，不能恢复；绑定与档案保留。"),
+                            bigButton("确认清空") { finishReview(); releaseFocus(); onClear() },
+                            actionGroup(listOf("取消" to { renderBinding() }))))
+                        // Back from the confirmation returns to the binding page.
+                        showBackControl { renderBinding() }
+                    },
+                    "取消" to { finishReview(); releaseFocus(); onCancel() }))))
+            showBackControl { finishReview(); releaseFocus(); onCancel() }
+        }
+
+        renderBinding()
         if (!expanded) toggle()
         setPanelFocusable(true)
     }
@@ -496,6 +509,7 @@ class OverlayController(private val ctx: Context) {
     /** OCR text is editable because both wording and speaker attribution can be wrong. */
     fun showReview(snapshot: ChatSnapshot, onConfirm: (ChatSnapshot) -> Unit,
                    onCancel: () -> Unit) {
+        if (!snapshot.title.isNullOrBlank()) lastTitle = snapshot.title
         ensureRoot(); ensurePanel()
         reviewCancel = onCancel
         val editor = EditText(ctx).apply {
@@ -525,6 +539,8 @@ class OverlayController(private val ctx: Context) {
             hint(bindingSummary),
             hint("只支持一对一聊天。请核对每行的我／对方和正文，确认后按记忆设置保存，再调用模型。"),
             editor, confirm))
+        // A way out that does not depend on finding the ✕.
+        showBackControl { finishReview(); releaseFocus(); onCancel() }
         if (!expanded) toggle()
         // Re-place with the real measured height, then take focus for the editor.
         panelRoot?.post {
@@ -538,6 +554,7 @@ class OverlayController(private val ctx: Context) {
     /** Confirm the run before any scrolling happens. */
     fun showBackfillPrompt(title: String?, defaultTarget: Int,
                            onStart: (Int) -> Unit, onCancel: () -> Unit) {
+        if (!title.isNullOrBlank()) lastTitle = title
         ensureRoot(); ensurePanel()
         reviewCancel = onCancel
         val count = EditText(ctx).apply {
@@ -560,6 +577,7 @@ class OverlayController(private val ctx: Context) {
                 onStart(n)
             },
             actionGroup(listOf("取消" to { finishReview(); releaseFocus(); onCancel() }))))
+        showBackControl { finishReview(); releaseFocus(); onCancel() }
         if (!expanded) toggle()
         panelRoot?.post { if (expanded) expandPanel(); setPanelFocusable(true) }
     }
@@ -589,6 +607,7 @@ class OverlayController(private val ctx: Context) {
      */
     internal fun showMessageReview(title: String?, result: BackfillResult,
                           onConfirm: (List<Msg>) -> Unit, onCancel: () -> Unit) {
+        if (!title.isNullOrBlank()) lastTitle = title
         ensureRoot(); ensurePanel()
         reviewCancel = onCancel
         val container = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
@@ -744,6 +763,7 @@ class OverlayController(private val ctx: Context) {
             container,
             confirm,
             actionGroup(listOf("放弃本轮" to { finishReview(); releaseFocus(); onCancel() }))))
+        showBackControl { finishReview(); releaseFocus(); onCancel() }
         if (!expanded) toggle()
         // Deliberately NOT focusable: FLAG_NOT_FOCUSABLE also makes the window
         // non-modal for touch, so swipes outside the panel reach the chat app.
@@ -932,6 +952,9 @@ class OverlayController(private val ctx: Context) {
                 "自动补录会话历史" to { onBackfill?.invoke() },
                 "导入聊天截图" to { onImportScreenshot?.invoke() }))))
         bubble?.alpha = 0.55f
+        // Errors are reachable from any flow, so give them the same way back the
+        // other sub-pages have instead of leaving ✕ as the only exit.
+        showBackControl { showIdle(lastTitle) }
         toast(msg)
     }
 

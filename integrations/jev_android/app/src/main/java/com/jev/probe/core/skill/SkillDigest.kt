@@ -21,7 +21,7 @@ object SkillDigest {
             val library = SkillLibrary.get(context)
             val q = query(snapshot, relationship, ctx?.background(relationship).orEmpty(), task, userGoal, endMode, memoryContext)
             val generalAllowed = prefs.skillKnowledgeEnabled
-            val required = requiredFiles(task, endMode)
+            val required = requiredFiles(task)
             val excerpts = if (generalAllowed || required.isNotEmpty() || SkillLibrary.RISK_TERMS.any { q.contains(it) }) {
                 library.search(q, limit = if (generalAllowed) 3 else 1, budget = if (generalAllowed) 2600 else 900,
                     requiredFiles = required, forceSafety = SkillLibrary.RISK_TERMS.any { q.contains(it) })
@@ -36,7 +36,7 @@ object SkillDigest {
         }
     }
 
-    private fun requiredFiles(task: CoachTask, endMode: String): Set<String> = when (task) {
+    private fun requiredFiles(task: CoachTask): Set<String> = when (task) {
         CoachTask.OPEN -> setOf("reply_craft.md", "first_meeting.md")
         CoachTask.END -> setOf("reply_craft.md", "vibe_calibration.md")
         CoachTask.REPLY -> setOf("reply_craft.md")

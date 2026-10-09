@@ -66,6 +66,8 @@ class OverlayController(private val ctx: Context) {
     private var panel: LinearLayout? = null
     private var contentBox: LinearLayout? = null
     private var panelLp: WindowManager.LayoutParams? = null
+    /** Header back control, shown only while a sub-page is open. */
+    private var backButton: TextView? = null
     private var expanded = false
 
     var onManualAnalyze: (() -> Unit)? = null
@@ -228,6 +230,19 @@ class OverlayController(private val ctx: Context) {
         }
         // Header
         val header = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        // Top-left way out of a sub-page (history / details), kept out of the way
+        // the rest of the time. It sits in the header rather than at the bottom
+        // of the page so it is reachable without scrolling a long history.
+        header.addView(TextView(ctx).apply {
+            text = "‹ 返回"
+            setTextColor(Color.parseColor("#2B5245"))
+            textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(0, dp(2), dp(10), dp(2))
+            visibility = View.GONE
+            isClickable = true
+            backButton = this
+        })
         header.addView(TextView(ctx).apply {
             text = "狗头军师"; setTextColor(Color.parseColor("#24382d")); textSize = 15f
             setTypeface(typeface, Typeface.BOLD)
@@ -894,12 +909,32 @@ class OverlayController(private val ctx: Context) {
         render(a, generating = false)
     }
 
-    fun showDetails(text: String, heading: String = "详细分析") {
+    /**
+     * A read-only page: detailed analysis, reply rationale, or stored history.
+     *
+     * [onBack] is the way out when there is nothing to return to. The history page
+     * can be opened before any analysis exists, and a button that only re-rendered
+     * an existing judgment was then a dead end.
+     */
+    fun showDetails(
+        text: String,
+        heading: String = "详细分析",
+        subtitle: String = "分析来自当前已核对的原文；推测与事实分开看。",
+        onBack: (() -> Unit)? = null
+    ) {
         ensureRoot(); ensurePanel()
-        setContent(listOf(line(heading, "#24382d", 17f, true),
-            hint("分析来自当前已核对的原文；推测与事实分开看。"),
-            line(text, "#374151", 13f),
-            bigButton("返回候选回复") { lastJudgment?.let { render(it, generating = false) } }))
+        val judgment = lastJudgment
+        val views = ArrayList<View>()
+        views.add(line(heading, "#24382d", 17f, true))
+        if (subtitle.isNotBlank()) views.add(hint(subtitle))
+        views.add(line(text, "#374151", 13f))
+        setContent(views)
+        when (DetailBackAction.forPage(judgment != null, onBack != null)) {
+            DetailBackAction.Kind.BACK_TO_REPLIES ->
+                showBackControl { judgment?.let { render(it, generating = false) } }
+            DetailBackAction.Kind.CALLBACK -> showBackControl { onBack?.invoke() }
+            DetailBackAction.Kind.NONE -> Unit
+        }
         if (!expanded) toggle()
     }
 
@@ -921,6 +956,17 @@ class OverlayController(private val ctx: Context) {
     private fun setContent(views: List<View>) {
         val c = contentBox ?: return
         c.removeAllViews(); views.forEach { c.addView(it) }
+        // Every page starts without a back control; showDetails opts back in.
+        backButton?.visibility = View.GONE
+        backButton?.setOnClickListener(null)
+    }
+
+    /** Put the way out of a sub-page in the panel's top-left corner. */
+    private fun showBackControl(onBack: () -> Unit) {
+        backButton?.apply {
+            visibility = View.VISIBLE
+            setOnClickListener { onBack() }
+        }
     }
 
     private fun render(a: Analysis, generating: Boolean) {

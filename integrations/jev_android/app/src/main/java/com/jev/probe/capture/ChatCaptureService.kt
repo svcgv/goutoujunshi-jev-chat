@@ -252,9 +252,14 @@ open class ChatCaptureService : AccessibilityService() {
             val store = KbStore.get(this)
             val binding = boundContact(snapshot.title, activePkg.orEmpty())
             val lines = binding?.let { store.recentLog(it.contactId, 100) }.orEmpty()
-            overlay?.showDetails(if (binding == null) "请先绑定当前会话" else lines.joinToString("\n") {
-                (if (it.side == "me") "我：" else "对方：") + it.text
-            }.ifBlank { "没有保存过核对后的消息" }, "本机对象历史")
+            overlay?.showDetails(
+                text = if (binding == null) "请先绑定当前会话" else lines.joinToString("\n") {
+                    (if (it.side == "me") "我：" else "对方：") + it.text
+                }.ifBlank { "没有保存过核对后的消息" },
+                heading = "本机对象历史",
+                subtitle = "本机保存的已核对消息，按时间从旧到新；只在此设备上，不上传。",
+                // No analysis required to read history, so always offer a way back.
+                onBack = { overlay?.showIdle(snapshot.title ?: manualWindowTitle) })
         }
         overlay?.onCalibrateTitleRegion = { guarded("calibrate") { startTitleCalibration() } }
         overlay?.onOcrCapture = { guarded("ocr") { ocrCaptureManual() } }

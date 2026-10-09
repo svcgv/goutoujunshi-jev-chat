@@ -684,7 +684,15 @@ open class ChatCaptureService : AccessibilityService() {
         if (!session.current.isActive()) return false
         val current = currentSnapshot ?: return false
         val root = rootInActiveWindow ?: return false
-        if (pkg.isBlank() || root.packageName?.toString() != pkg ||
+        // While our own focusable panel (binding/review editor) owns focus,
+        // rootInActiveWindow is us, not the chat app. That is not a switch, so
+        // fall back to the package this round was started for.
+        val livePackage = root.packageName?.toString()
+        if (livePackage == packageName) {
+            return pkg.isNotBlank() && current.title == snapshot.title &&
+                current.signature() == snapshot.signature()
+        }
+        if (pkg.isBlank() || livePackage != pkg ||
             current.title != snapshot.title || current.signature() != snapshot.signature()) return false
         // A new chat can be visible before OCR finishes and updates currentSnapshot.
         // Check the live title too, so the previous chat's result cannot flash over it.

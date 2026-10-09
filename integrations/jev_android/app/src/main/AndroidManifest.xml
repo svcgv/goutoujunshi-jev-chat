@@ -36,6 +36,15 @@
             android:exported="false" />
 
         <activity
+            android:name=".CoachActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".MemoryActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".KlineActivity"
             android:exported="false" />
 

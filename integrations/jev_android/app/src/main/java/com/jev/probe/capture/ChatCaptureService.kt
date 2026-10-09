@@ -6,6 +6,7 @@ import android.accessibilityservice.AccessibilityService.GestureResultCallback
 import android.accessibilityservice.GestureDescription
 import android.content.res.Configuration
 import com.jev.probe.CapturePermissionActivity
+import com.jev.probe.CoachActivity
 import com.jev.probe.capture.ocr.CaptureHandoff
 import com.jev.probe.capture.ocr.ProjectionCaptureService
 import com.jev.probe.capture.ocr.ProjectionFrameBus
@@ -235,6 +236,9 @@ open class ChatCaptureService : AccessibilityService() {
                 }
             }
         }
+        overlay?.onOpenChat = { openCoach("open", null, autoStart = true) }
+        overlay?.onEndChat = { mode -> openCoach("end", mode, autoStart = true) }
+        overlay?.onConsult = { openCoach("consult", null, autoStart = false) }
         overlay?.onSaveContact = { guarded("bind") { showBinding() } }
         overlay?.onProjectionCapture = { guarded("projection") { startExternalCapture(false) } }
         overlay?.onBackfill = { guarded("backfill") { startBackfillPrompt() } }
@@ -556,6 +560,32 @@ open class ChatCaptureService : AccessibilityService() {
         val resolved = resolveBoundContact(title, pkg)
         if (resolved != null) learnFromResolvedBinding(pkg, resolved, title)
         return resolved
+    }
+
+    /**
+     * Carry only the currently reviewed snapshot into the standalone coach.
+     * The coach never receives an accessibility node and can therefore never
+     * fill or send into the foreground chat app.
+     */
+    private fun openCoach(task: String, endMode: String?, autoStart: Boolean) {
+        val snap = currentSnapshot
+        val pkg = activePkg ?: foregroundPkg.orEmpty()
+        val binding = snap?.let { boundContact(it.title, pkg) }
+        val intent = Intent(this, CoachActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .putExtra(CoachActivity.EXTRA_TASK, task)
+            .putExtra(CoachActivity.EXTRA_AUTO_START, autoStart)
+            .putExtra(CoachActivity.EXTRA_FROM_OVERLAY, true)
+            .putExtra(CoachActivity.EXTRA_CONTACT_ID, binding?.contactId)
+            .putExtra(CoachActivity.EXTRA_TITLE, snap?.title ?: manualWindowTitle)
+            .putExtra(CoachActivity.EXTRA_RELATIONSHIP, prefs.relationship)
+        snap?.messages?.let { rows ->
+            intent.putStringArrayListExtra(CoachActivity.EXTRA_MESSAGES,
+                ArrayList(rows.map { it.side + "\u0001" + it.text }))
+        }
+        endMode?.let { intent.putExtra(CoachActivity.EXTRA_END_MODE, it) }
+        runCatching { startActivity(intent) }.onFailure { overlay?.toast("无法打开军师咨询") }
+        if (overlay?.isShowing() == true) overlay?.hide()
     }
 
     /**
@@ -1282,12 +1312,29 @@ open class ChatCaptureService : AccessibilityService() {
 
     /** Persist (when memory is on) and then analyse the reviewed backfill. */
     private fun confirmBackfill(token: WorkToken, pkg: String, title: String?, messages: List<Msg>) {
-        if (!session.isCurrent(token) || !session.reviewPending) return
+        // Every early return here is otherwise silent, which made a mis-click and
+        // a swallowed click look identical to the user.
+        CrashLogger.diag(this, "confirmBackfill enter msgs=${messages.size} " +
+            "current=${session.isCurrent(token)} reviewPending=${session.reviewPending}")
+        if (!session.isCurrent(token) || !session.reviewPending) {
+            CrashLogger.diag(this, "confirmBackfill aborted: session gone")
+            return
+        }
         val identityTitle = title ?: manualWindowTitle
-        if (identityTitle.isNullOrBlank()) { overlay?.showError("无法确认当前会话身份，请重新绑定"); return }
+        if (identityTitle.isNullOrBlank()) {
+            CrashLogger.diag(this, "confirmBackfill aborted: no identity title")
+            overlay?.showError("无法确认当前会话身份，请重新绑定"); return
+        }
         val binding = boundContact(identityTitle, pkg)
-        if (binding == null) { overlay?.showError("请先绑定当前会话对象"); return }
-        if (!session.confirmReview(token)) return
+        if (binding == null) {
+            CrashLogger.diag(this, "confirmBackfill aborted: unbound (pkg=$pkg appRows=" +
+                "${KbStore.get(this).bindingsForApp(pkg).size})")
+            overlay?.showError("请先绑定当前会话对象"); return
+        }
+        if (!session.confirmReview(token)) {
+            CrashLogger.diag(this, "confirmBackfill aborted: confirmReview refused")
+            return
+        }
         overlay?.showLoading()
         val snapshot = ChatSnapshot(identityTitle, messages,
             note = "自动补录 · 原文与说话人已人工核对")
@@ -1929,6 +1976,9 @@ open class ChatCaptureService : AccessibilityService() {
         overlay?.onProjectionCapture = null
         overlay?.onImportScreenshot = null
         overlay?.onShowHistory = null
+        overlay?.onOpenChat = null
+        overlay?.onEndChat = null
+        overlay?.onConsult = null
         overlay?.onCalibrateTitleRegion = null
         overlay?.onHidden = null
         overlay?.hide()

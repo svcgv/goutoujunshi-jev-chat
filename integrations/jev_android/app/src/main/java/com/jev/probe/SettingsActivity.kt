@@ -378,6 +378,9 @@ class SettingsActivity : AppCompatActivity() {
         card2.addView(cardBtn("知识库与联系人") {
             startActivity(android.content.Intent(this, KnowledgeActivity::class.java))
         })
+        card2.addView(cardBtn("精简记忆与咨询原文") {
+            startActivity(android.content.Intent(this, MemoryActivity::class.java))
+        })
         val kbResult = resultText()
         card2.addView(cardBtn("清空知识库与历史") {
             val c = KbStore.get(this).counts()

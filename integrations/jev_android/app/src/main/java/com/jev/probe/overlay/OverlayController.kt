@@ -74,6 +74,10 @@ class OverlayController(private val ctx: Context) {
     var onDetails: (() -> Unit)? = null
     var onExplain: ((String) -> Unit)? = null
     var onRewrite: (() -> Unit)? = null
+    /** Quick paths to the standalone coach. */
+    var onOpenChat: (() -> Unit)? = null
+    var onEndChat: ((String) -> Unit)? = null
+    var onConsult: (() -> Unit)? = null
 
     /** Bubble menu → file the open conversation as a knowledge-base contact. */
     var onSaveContact: (() -> Unit)? = null
@@ -434,6 +438,12 @@ class OverlayController(private val ctx: Context) {
                 hint(title?.let { "当前窗口：$it" } ?: "请进入聊天窗口"), hint(bindingSummary),
                 bigButton("分析当前对话") { onManualAnalyze?.invoke() },
                 actionGroup(listOf(
+                    "帮我回复" to { onManualAnalyze?.invoke() },
+                    "发起聊天" to { onOpenChat?.invoke() },
+                    "结束本轮" to { onEndChat?.invoke("end_turn") },
+                    "减少投入" to { onEndChat?.invoke("reduce_investment") },
+                    "结束关系" to { onEndChat?.invoke("end_relationship") },
+                    "问军师（连续咨询）" to { onConsult?.invoke() },
                     "绑定对象 / 记忆设置" to { onSaveContact?.invoke() },
                     "自动补录会话历史" to { onBackfill?.invoke() },
                     "导入聊天截图" to { onImportScreenshot?.invoke() },
@@ -676,6 +686,10 @@ class OverlayController(private val ctx: Context) {
         val confirm = bigButton("确认原文并分析") {
             capture()
             val msgs = collect()
+            runCatching {
+                com.jev.probe.CrashLogger.diag(ctx, "review confirm tapped msgs=${msgs.size} " +
+                    "unknown=${msgs.count { it.side == "unknown" }}")
+            }
             when {
                 msgs.isEmpty() -> toast("至少保留一条消息")
                 msgs.any { it.side == "unknown" } -> toast("请点击每一行把“待确认”改成我或对方")
@@ -1052,6 +1066,12 @@ class OverlayController(private val ctx: Context) {
             if (a.rankedReplies.isNotEmpty())
                 views.add(pill("更像我一点", false) { onRewrite?.invoke() })
         }
+        views.add(actionGroup(listOf(
+            "发起聊天" to { onOpenChat?.invoke() },
+            "结束本轮" to { onEndChat?.invoke("end_turn") },
+            "减少投入 / 交还主动权" to { onEndChat?.invoke("reduce_investment") },
+            "明确结束关系" to { onEndChat?.invoke("end_relationship") },
+            "问军师（连续咨询）" to { onConsult?.invoke() })))
 
         setContent(views)
         if (!expanded) toggle()

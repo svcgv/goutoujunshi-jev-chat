@@ -169,14 +169,79 @@ class KbStore internal constructor(private val root: File, private val report: (
         // Never overwrite an unreadable bindings file.
         if (bindingsFile.exists()) try { ConversationBindings.decode(bindingsFile.readText()) }
             catch (_: Exception) { return false }
-        // Drop any previous row for this same window (same app+title), and also
-        // collapse duplicates that point at the same contact in the same app —
-        // a contact has one conversation per app, so stale rows are just noise.
-        val rows = bindings().filterNot {
-            (it.app == binding.app && it.title == binding.title.trim()) ||
-                (it.app == binding.app && it.contactId == binding.contactId)
+        // Drop any previous row for this same window — matched by the new title
+        // OR by one of its recorded aliases, since a renamed contact shows up
+        // under its new title — and collapse duplicates that point at the same
+        // contact in the same app (a contact has one conversation per app).
+        val existing = bindings()
+        val replaced = existing.filter {
+            it.app == binding.app &&
+                (it.matchesTitle(binding.title) || it.contactId == binding.contactId)
         }
-        writeAtomic(bindingsFile, ConversationBindings.encode(rows + binding.copy(title = binding.title.trim())).toString())
+        // Re-binding a renamed conversation must not forget the titles it was
+        // already known by.
+        val carriedAliases = replaced.filter { it.contactId == binding.contactId }.flatMap { it.titleAliases }
+        val rows = existing.filterNot { it in replaced }
+        val merged = binding.copy(
+            title = binding.title.trim(),
+            titleAliases = (binding.titleAliases + carriedAliases).distinct()
+        )
+        writeAtomic(bindingsFile, ConversationBindings.encode(rows + merged).toString())
+    }
+
+    /**
+     * Identify a conversation by matching the on-screen messages against each
+     * contact's stored history.
+     *
+     * Used when the title is unreadable and the short fingerprint no longer
+     * overlaps (the user scrolled away, or the chat moved on). The stored history
+     * holds up to MAX_LOG reviewed lines per contact, so it stays useful.
+     */
+    fun matchBindingByStoredHistory(
+        app: String,
+        messages: List<String>,
+        minOverlap: Int = ConversationBindings.MIN_OVERLAP
+    ): ConversationBinding? = synchronized(lock) {
+        if (app.isBlank() || messages.size < minOverlap) return null
+        val entries = bindings()
+            .filter { it.app == app }
+            .map { it to loadLog(it.contactId).mapNotNull { e -> normalizeText(e.text) } }
+            .filter { (_, corpus) -> corpus.isNotEmpty() }
+        if (entries.isEmpty()) return null
+        ConversationBindings.resolveByCorpus(entries, app, messages, minOverlap)
+    }
+
+    /**
+     * Merge newly seen message lines into the binding identified by [title].
+     *
+     * Idempotent; returns true when there was nothing to write.
+     */
+    fun expandBindingFingerprint(app: String, title: String, messages: List<String>): Boolean = synchronized(lock) {
+        if (bindingsFile.exists()) try { ConversationBindings.decode(bindingsFile.readText()) }
+            catch (_: Exception) { return false }
+        val rows = bindings()
+        val index = rows.indexOfFirst { it.app == app && it.title.trim() == title.trim() }
+        if (index < 0) return true
+        val row = rows[index]
+        val grown = ConversationBindings.expandedFingerprint(row.fingerprint, messages)
+            ?: return true
+        val updated = rows.toMutableList().also { it[index] = row.copy(fingerprint = grown) }
+        writeAtomic(bindingsFile, ConversationBindings.encode(updated).toString())
+    }
+
+    /**
+     * Record [alias] as another title for the conversation stored under [title].
+     *
+     * Called when a window whose title changed is re-identified as the same
+     * conversation. Idempotent: returns true when there is nothing to write
+     * (unknown binding, or the alias is already known).
+     */
+    fun addBindingTitleAlias(app: String, title: String, alias: String): Boolean = synchronized(lock) {
+        // Never overwrite an unreadable bindings file.
+        if (bindingsFile.exists()) try { ConversationBindings.decode(bindingsFile.readText()) }
+            catch (_: Exception) { return false }
+        val updated = ConversationBindings.withTitleAlias(bindings(), app, title, alias) ?: return true
+        writeAtomic(bindingsFile, ConversationBindings.encode(updated).toString())
     }
 
     fun unbind(title: String, app: String): Boolean = synchronized(lock) {

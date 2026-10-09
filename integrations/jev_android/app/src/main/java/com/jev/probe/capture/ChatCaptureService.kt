@@ -112,6 +112,10 @@ open class ChatCaptureService : AccessibilityService() {
     private var externalCapturePending = false
     private var projectionStartPending = false
     private var backfillTitle: String? = null
+    /** (pkg|bindingTitle|alias) already requested, so we write once. */
+    private val aliasWrites = HashSet<String>()
+    /** bindings whose fingerprint has already been grown this session. */
+    private val fingerprintWrites = HashSet<String>()
     @Volatile private var backfillActive = false
     private var backfillToken: WorkToken? = null
     private var waitingExternalBitmap: Bitmap? = null
@@ -506,6 +510,33 @@ open class ChatCaptureService : AccessibilityService() {
         ConversationBindingKey.resolve(title, manualWindowTitle)
 
     /**
+     * Record that this window is ALSO known by [liveTitle].
+     *
+     * Chat apps let the user rename a contact or edit a remark, so the title a
+     * conversation was bound under stops matching it. Once the window has been
+     * re-identified (by its messages, or by the name already confirmed this
+     * session), the new title is stored as an alias of the same binding, so
+     * later visits resolve by exact title instead of depending on the message
+     * fingerprint — which only covers the few lines seen at bind time.
+     *
+     * Written off the main thread, at most once per (binding, title) per session.
+     */
+    private fun rememberTitleAlias(pkg: String, binding: ConversationBinding, liveTitle: String?) {
+        val alias = liveTitle?.trim().orEmpty()
+        if (alias.isEmpty() || isTransientTitle(alias) || binding.matchesTitle(alias)) return
+        val key = "$pkg|${binding.title}|$alias"
+        synchronized(aliasWrites) { if (!aliasWrites.add(key)) return }
+        submit {
+            val ok = KbStore.get(this).addBindingTitleAlias(pkg, binding.title, alias)
+            if (ok) {
+                CrashLogger.diag(this, "binding alias recorded")
+            } else {
+                synchronized(aliasWrites) { aliasWrites.remove(key) }
+            }
+        }
+    }
+
+    /**
      * The contact bound to this conversation, or null when it is not bound yet.
      *
      * A readable title identifies the conversation by itself. When the title is
@@ -517,6 +548,30 @@ open class ChatCaptureService : AccessibilityService() {
      * in the same app we cannot tell them apart and the user must confirm.
      */
     private fun boundContact(title: String?, pkg: String): ConversationBinding? {
+        val resolved = resolveBoundContact(title, pkg)
+        if (resolved != null) learnFromResolvedBinding(pkg, resolved, title)
+        return resolved
+    }
+
+    /**
+     * Feed what we just learned back into the binding so identification gets
+     * easier over time: the title this window is currently showing, and the
+     * messages on screen (the only signal available when the title is hidden).
+     */
+    private fun learnFromResolvedBinding(pkg: String, binding: ConversationBinding, liveTitle: String?) {
+        rememberTitleAlias(pkg, binding, liveTitle)
+        val onScreen = currentSnapshot?.messages?.map { it.text }.orEmpty()
+        if (onScreen.isEmpty()) return
+        val key = "${binding.app}|${binding.title}"
+        synchronized(fingerprintWrites) { if (!fingerprintWrites.add(key)) return }
+        submit {
+            val ok = KbStore.get(this).expandBindingFingerprint(binding.app, binding.title, onScreen)
+            if (ok) CrashLogger.diag(this, "binding fingerprint grown")
+            else synchronized(fingerprintWrites) { fingerprintWrites.remove(key) }
+        }
+    }
+
+    private fun resolveBoundContact(title: String?, pkg: String): ConversationBinding? {
         val store = KbStore.get(this)
         val key = conversationKey(title)
         if (key != null) {
@@ -527,6 +582,24 @@ open class ChatCaptureService : AccessibilityService() {
                 return it
             }
         }
+        // The user can maintain alternate names for a contact (知识库与联系人 →
+        // 别名). A window whose title matches one of them belongs to that
+        // contact's conversation even when the binding was stored under a
+        // different title — which is exactly what a renamed remark produces.
+        if (!title.isNullOrBlank()) {
+            val wanted = KbStore.normalizeName(title)
+            val viaContactAlias = store.bindingsForApp(pkg).filter { candidate ->
+                store.contact(candidate.contactId)?.aliases
+                    ?.any { KbStore.normalizeName(it) == wanted } == true
+            }.singleOrNull()
+            if (viaContactAlias != null) {
+                manualWindowTitle = viaContactAlias.title
+                Log.i(TAG, "bind lookup pkg=$pkg hit=byContactAlias")
+                CrashLogger.diag(this, "bindLookup hit=byContactAlias")
+                return viaContactAlias
+            }
+        }
+
         // The readable title is not one we have a binding for. That does NOT mean
         // the window is unbound: WeChat's title can differ from the stored one
         // (the user renamed the contact after binding, or the app renders a prefix
@@ -539,6 +612,7 @@ open class ChatCaptureService : AccessibilityService() {
             store.binding(remembered, pkg)?.let {
                 Log.i(TAG, "bind lookup pkg=$pkg hit=byRememberedTitle")
                 CrashLogger.diag(this, "bindLookup hit=byRememberedTitle")
+                rememberTitleAlias(pkg, it, title)
                 return it
             }
         }
@@ -549,9 +623,20 @@ open class ChatCaptureService : AccessibilityService() {
             manualWindowTitle = it.title
             Log.i(TAG, "bind lookup pkg=$pkg hit=byFingerprint")
             CrashLogger.diag(this, "bindLookup hit=byFingerprint")
+            rememberTitleAlias(pkg, it, title)
             return it
         }
         // Last resort: a single binding in this app is unambiguous.
+        // Still unidentified. The stored history is far larger than the short
+        // fingerprint, so it survives both scrolling and the chat moving on —
+        // this is what re-identifies a window whose title the app hides.
+        store.matchBindingByStoredHistory(pkg, onScreen)?.let {
+            manualWindowTitle = it.title
+            Log.i(TAG, "bind lookup pkg=$pkg hit=byStoredHistory")
+            CrashLogger.diag(this, "bindLookup hit=byStoredHistory")
+            return it
+        }
+
         val rows = store.bindings().filter { it.app == pkg }
         val only = rows.singleOrNull()
         if (only != null) manualWindowTitle = only.title

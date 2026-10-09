@@ -14,6 +14,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.widget.CheckBox
 import android.widget.Spinner
 import android.widget.ArrayAdapter
@@ -594,6 +595,20 @@ class OverlayController(private val ctx: Context) {
                     setPadding(dp(8), dp(6), dp(8), dp(6))
                     background = card(8, Color.WHITE, stroke = true)
                 }
+                // The panel stays non-focusable so the WeChat list behind it
+                // keeps scrolling for cross-checking. Only a tap on a message
+                // body pulls window focus (and the IME) to that editor.
+                editor.setOnTouchListener { v, e ->
+                    if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+                        setPanelFocusable(true)
+                        v.post {
+                            v.requestFocus()
+                            (ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+                                ?.showSoftInput(v, InputMethodManager.SHOW_IMPLICIT)
+                        }
+                    }
+                    false
+                }
                 val actions = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
                 actions.addView(smallAction("拆分") {
                     capture()
@@ -646,10 +661,22 @@ class OverlayController(private val ctx: Context) {
             }
         }
         setContent(listOf(
-            line("核对本轮对话", "#24382d", 16f, true),
+            TextView(ctx).apply {
+                text = "核对本轮对话"
+                setTextColor(Color.parseColor("#24382d"))
+                textSize = 16f
+                setTypeface(typeface, Typeface.BOLD)
+                setPadding(0, dp(2), 0, dp(2))
+                setOnClickListener {
+                    // Hand focus back so the chat list is scrollable again.
+                    releaseFocus()
+                    toast("已退出编辑，可滑动微信对照原文")
+                }
+            },
             hint(title?.let { "当前会话：$it" } ?: "当前会话身份待确认"),
             hint(result.summary()),
-            hint("点击标题切换 我／对方；正文可直接编辑。每条下方可拆分、与下一条合并或删除。"),
+            hint("核对时可直接滑动微信对照原文；点某条正文才开始编辑，点标题「核对本轮对话」退出编辑。"),
+            hint("点击每条标题切换 我／对方；正文下方可拆分、与下一条合并或删除。"),
             if (usedOcr)
                 hint("本次包含本地 OCR 结果：说话人无法自动判断，带「待确认」的每一条都必须手动指定我／对方。")
             else hint(""),
@@ -657,7 +684,9 @@ class OverlayController(private val ctx: Context) {
             confirm,
             actionGroup(listOf("放弃本轮" to { finishReview(); releaseFocus(); onCancel() }))))
         if (!expanded) toggle()
-        panelRoot?.post { if (expanded) expandPanel(); setPanelFocusable(true) }
+        // Deliberately NOT focusable: FLAG_NOT_FOCUSABLE also makes the window
+        // non-modal for touch, so swipes outside the panel reach the chat app.
+        panelRoot?.post { if (expanded) expandPanel(); setPanelFocusable(false) }
     }
 
     private data class ReviewItem(

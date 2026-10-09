@@ -367,7 +367,11 @@ class KbStore internal constructor(private val root: File, private val report: (
             val merged = ArrayList(result.entries)
             while (merged.size > MAX_LOG) merged.removeAt(0)
             val ok = writeAtomic(logFile(contactId), logJson(merged))
-            if (!ok) logCache.remove(contactId)
+            // The merged list is a COPY of what loadLog() cached, so a successful
+            // write left the cache pointing at the pre-save rows: the panel kept
+            // reporting the old "已存 N 条" and 查看对象历史 showed only those.
+            // Publish the new list, or drop the cache if the write did not land.
+            if (ok) logCache[contactId] = merged else logCache.remove(contactId)
             report("rememberBackfill contact=$contactId inserted=${result.inserted} " +
                 "anchored=${result.anchored} total=${merged.size} ok=$ok")
             return ok

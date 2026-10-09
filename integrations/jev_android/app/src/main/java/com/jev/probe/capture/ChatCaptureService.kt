@@ -1125,7 +1125,9 @@ open class ChatCaptureService : AccessibilityService() {
             val byRect = OcrAttribution.assign(lines, rects)
             val byPosition = byRect ?: OcrAttribution.groupByPosition(lines, resources.displayMetrics.widthPixels)
                 .takeIf { it.isNotEmpty() }
-            val msgs = byPosition ?: groupOcrLines(lines)
+            val msgs = (byPosition ?: groupOcrLines(lines)).map { m ->
+                NonTextBubble.placeholderFor(m.text)?.let { Msg(m.side, it) } ?: m
+            }
             CrashLogger.diag(this, "ocr frame lines=${lines.size} rects=${rects.size} " +
                 "path=" + when {
                     byRect != null -> "rects"
@@ -1665,18 +1667,25 @@ open class ChatCaptureService : AccessibilityService() {
             val p = prev
             if (p != null) {
                 val gap = l.bounds.top - p.bounds.bottom
-                val lineHeight = maxOf(p.bounds.height(), 1)
+                val lineHeight = maxOf(p.bounds.bottom - p.bounds.top, 1)
                 if (gap > lineHeight * 1.2f) {
-                    if (buf.isNotEmpty()) { out.add(Msg("unknown", buf.toString())); buf.setLength(0) }
+                    if (buf.isNotEmpty()) { out.add(Msg("unknown", placeholder(buf.toString()))); buf.setLength(0) }
                 }
             }
             if (buf.isNotEmpty()) buf.append(' ')
             buf.append(l.text.trim())
             prev = l
         }
-        if (buf.isNotEmpty()) out.add(Msg("unknown", buf.toString()))
+        if (buf.isNotEmpty()) out.add(Msg("unknown", placeholder(buf.toString())))
         return out
     }
+
+    /**
+     * A red packet or transfer card is not dialogue, so it is kept as a named
+     * placeholder rather than as the card's own wording — the model is told
+     * something happened without reading it as something the person typed.
+     */
+    private fun placeholder(text: String): String = NonTextBubble.placeholderFor(text) ?: text
 
     /** Strip the read receipt and the timestamp Feishu glues onto a bubble. */
     private fun cleanBubbleText(raw: String): String {

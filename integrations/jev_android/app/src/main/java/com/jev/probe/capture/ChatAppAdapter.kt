@@ -170,7 +170,7 @@ class WeChatAdapter : ChatAppAdapter {
 
     override fun extract(root: AccessibilityNodeInfo, res: Resources): ChatSnapshot? {
         val width = res.displayMetrics.widthPixels
-        val bubbles = ArrayList<Triple<Int, Int, String>>() // top, centerX, text
+        val bubbles = ArrayList<WeChatBubble>()
         // Geometry for every bubble, with the speaker its position implies. Kept
         // even when the text is hidden, so the OCR fallback can still tell who
         // said what instead of marking the whole screen "待确认".
@@ -200,7 +200,7 @@ class WeChatAdapter : ChatAppAdapter {
                     rects.add(BubbleRect(Rect(b), if (b.centerX() > width / 2) "me" else "other"))
                 }
                 if (!text.isNullOrBlank()) {
-                    bubbles.add(Triple(b.top, b.centerX(), text))
+                    bubbles.add(WeChatBubble(b.top, b.centerX(), text, desc))
                     if (b.top < firstBubbleTop) firstBubbleTop = b.top
                 }
             }
@@ -216,13 +216,24 @@ class WeChatAdapter : ChatAppAdapter {
                     viewportTop = top, viewportBottom = composerTop, listAtEnd = ListEndSignal.detect(root))
             else null
         }
-        bubbles.sortBy { it.first }
-        val msgs = bubbles.map { (_, cx, text) ->
-            Msg(if (cx > width / 2) "me" else "other", text)
+        bubbles.sortBy { it.top }
+        val msgs = bubbles.map { bubble ->
+            val side = if (bubble.centerX > width / 2) "me" else "other"
+            // A red packet / transfer card is not something the person typed, so
+            // it enters the transcript as a named placeholder instead of as the
+            // card's own wording.
+            Msg(side, NonTextBubble.placeholderFor(bubble.text, bubble.description) ?: bubble.text)
         }
         return ChatSnapshot(title, msgs, bubbleRects = rects, isGroup = group,
             viewportTop = top, viewportBottom = composerTop, listAtEnd = ListEndSignal.detect(root))
     }
+
+    private data class WeChatBubble(
+        val top: Int,
+        val centerX: Int,
+        val text: String,
+        val description: String
+    )
 
     companion object {
         private const val BUBBLE_ID = "com.tencent.mm:id/bkl"
@@ -277,7 +288,8 @@ class QQAdapter : ChatAppAdapter {
                     rects.add(BubbleRect(Rect(b), if (dr < dl) "me" else "other"))
                 }
                 if (!text.isNullOrBlank()) {
-                    bubbles.add(Bubble(b.top, b.left, b.right, text))
+                    bubbles.add(Bubble(b.top, b.left, b.right, text,
+                        node.contentDescription?.toString().orEmpty()))
                 }
             }
             if (!hasInput && id == INPUT_ID) hasInput = true
@@ -295,12 +307,19 @@ class QQAdapter : ChatAppAdapter {
         val msgs = bubbles.map { b ->
             val dl = kotlin.math.abs(b.left - avatarEdge)
             val dr = kotlin.math.abs((width - avatarEdge) - b.right)
-            Msg(if (dr < dl) "me" else "other", b.text)
+            val side = if (dr < dl) "me" else "other"
+            Msg(side, NonTextBubble.placeholderFor(b.text, b.description) ?: b.text)
         }
         return ChatSnapshot(title, msgs, bubbleRects = rects, listAtEnd = ListEndSignal.detect(root))
     }
 
-    private data class Bubble(val top: Int, val left: Int, val right: Int, val text: String)
+    private data class Bubble(
+        val top: Int,
+        val left: Int,
+        val right: Int,
+        val text: String,
+        val description: String = ""
+    )
 
     companion object {
         private const val BUBBLE_ID = "com.tencent.mobileqq:id/mjn"

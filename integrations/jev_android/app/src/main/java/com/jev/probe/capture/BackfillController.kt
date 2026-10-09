@@ -6,7 +6,13 @@ import com.jev.probe.core.Msg
 internal data class BackfillScreen(
     val messages: List<Msg>,
     val viewportTop: Int,
-    val viewportBottom: Int
+    val viewportBottom: Int,
+    /**
+     * Definitive "the newest message is the last visible row" answer when the
+     * app reports collection metadata; null when it does not (the usual case),
+     * in which case the stable-read heuristic decides.
+     */
+    val listAtEnd: Boolean? = null
 )
 
 /**
@@ -74,6 +80,9 @@ internal class BackfillController(
             val stable = sig == lastSignature && area == lastArea
             lastSignature = sig
             lastArea = area
+            // A list that reports its last row visible is proof; otherwise two
+            // identical reads after an attempted scroll are the best we have.
+            if (screen.listAtEnd == true) return@requestScreen beginCollect(screen)
             if (stable && bottomSwipes > 0) return@requestScreen beginCollect(screen)
 
             val plan = BackfillScroll.plan(widthPx(), area.first, area.second,
@@ -166,6 +175,7 @@ internal class BackfillController(
             val stable = sig == lastSignature && area == lastArea
             lastSignature = sig
             lastArea = area
+            if (screen.listAtEnd == true) return@requestScreen build()
             if (stable && returnSwipes > 0) return@requestScreen build()
             val plan = BackfillScroll.plan(widthPx(), area.first, area.second,
                 towardOlder = false, step = BackfillScroll.COLLECT_STEP) ?: return@requestScreen build()

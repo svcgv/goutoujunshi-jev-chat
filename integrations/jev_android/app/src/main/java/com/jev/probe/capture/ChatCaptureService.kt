@@ -818,7 +818,7 @@ open class ChatCaptureService : AccessibilityService() {
         val top = snap.viewportTop ?: (h * 0.14f).toInt()
         val bottom = snap.viewportBottom ?: (h * 0.84f).toInt()
         if (bottom - top < 80) return null
-        return BackfillScreen(messages, top, bottom)
+        return BackfillScreen(messages, top, bottom, snap.listAtEnd)
     }
 
     /**

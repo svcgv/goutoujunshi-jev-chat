@@ -23,14 +23,20 @@ class BackfillControllerTest {
     }
 
     /** A scrollable conversation: a window of [window] messages out of [total]. */
-    private class FakeChat(val total: Int, val window: Int, var end: Int) {
+    private class FakeChat(val total: Int, val window: Int, var end: Int,
+                           val reportsListEnd: Boolean = false) {
+        var newerScrolls = 0
+            private set
+
         fun screen(): BackfillScreen {
             val to = end.coerceIn(minOf(window, total), total)
             val from = (to - window).coerceAtLeast(0)
             val msgs = (from until to).map { Msg(if (it % 2 == 0) "other" else "me", "m$it") }
-            return BackfillScreen(msgs, 100, 1100)
+            val atEnd = if (reportsListEnd) to >= total else null
+            return BackfillScreen(msgs, 100, 1100, atEnd)
         }
         fun scroll(towardOlder: Boolean, move: Int) {
+            if (!towardOlder) newerScrolls++
             val step = maxOf(1, move)
             end = if (towardOlder) (end - step).coerceAtLeast(minOf(window, total))
                   else (end + step).coerceAtMost(total)
@@ -137,5 +143,39 @@ class BackfillControllerTest {
         sched.runAll(limit = 5_000)
         assertNotNull(out)
         assertEquals(BackfillStopReason.UNREADABLE, out!!.stopReason)
+    }
+
+    @Test fun aReportedLastRowSkipsTheBottomProbingScrolls() {
+        // Already at the very bottom, and the list reports it: the run must reach
+        // the COLLECTING phase without any scroll toward newer first. (The return
+        // phase legitimately scrolls toward newer again afterwards.)
+        val chat = FakeChat(total = 80, window = 10, end = 80, reportsListEnd = true)
+        val sched = FakeScheduler()
+        var out: BackfillResult? = null
+        var newerScrollsWhenCollecting: Int? = null
+        val controller = BackfillController(
+            options = BackfillOptions(50),
+            postDelayed = sched::post,
+            requestScreen = { cb -> cb(chat.screen()) },
+            scroll = { step, done ->
+                val travel = kotlin.math.abs(step.endY - step.startY)
+                chat.scroll(towardOlder = step.endY > step.startY,
+                    move = maxOf(1, chat.window * travel / 1000))
+                done()
+            },
+            widthPx = { 1000 },
+            running = { out == null },
+            progress = { st ->
+                if (st.phase == BackfillPhase.COLLECTING && newerScrollsWhenCollecting == null) {
+                    newerScrollsWhenCollecting = chat.newerScrolls
+                }
+            },
+            onFinish = { out = it })
+        controller.start()
+        sched.runAll()
+        assertEquals(0, newerScrollsWhenCollecting)
+        assertEquals(BackfillStopReason.TARGET_REACHED, out!!.stopReason)
+        assertEquals(50, out!!.messages.size)
+        assertEquals("m79", out!!.messages.last().text)
     }
 }

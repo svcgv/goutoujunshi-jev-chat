@@ -37,7 +37,13 @@ data class ChatSnapshot(
      * rather than guessing with a percentage of the screen.
      */
     val viewportTop: Int? = null,
-    val viewportBottom: Int? = null
+    val viewportBottom: Int? = null,
+    /**
+     * True when the newest message is the last visible row of the list, false
+     * when more rows follow, null when the app reports no collection metadata.
+     * Only meaningful for the adapted chat apps.
+     */
+    val listAtEnd: Boolean? = null
 ) {
     val latestFrom: String? get() = messages.lastOrNull()?.side
 

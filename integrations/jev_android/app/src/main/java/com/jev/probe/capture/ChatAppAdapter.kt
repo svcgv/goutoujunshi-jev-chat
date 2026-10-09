@@ -192,7 +192,7 @@ class WeChatAdapter : ChatAppAdapter {
         if (bubbles.isEmpty()) {
             return if (isChat || composer)
                 ChatSnapshot(title, emptyList(), isGroup = group,
-                    viewportTop = top, viewportBottom = composerTop)
+                    viewportTop = top, viewportBottom = composerTop, listAtEnd = ListEndSignal.detect(root))
             else null
         }
         bubbles.sortBy { it.first }
@@ -200,7 +200,7 @@ class WeChatAdapter : ChatAppAdapter {
             Msg(if (cx > width / 2) "me" else "other", text)
         }
         return ChatSnapshot(title, msgs, isGroup = group,
-            viewportTop = top, viewportBottom = composerTop)
+            viewportTop = top, viewportBottom = composerTop, listAtEnd = ListEndSignal.detect(root))
     }
 
     companion object {
@@ -258,7 +258,7 @@ class QQAdapter : ChatAppAdapter {
         if (bubbles.isEmpty() && !hasInput) return null
 
         if (title == null) title = findTitleInActionBar(root, firstBubbleTop, width, res)
-        if (bubbles.isEmpty()) return ChatSnapshot(title, emptyList())
+        if (bubbles.isEmpty()) return ChatSnapshot(title, emptyList(), listAtEnd = ListEndSignal.detect(root))
 
         val avatarEdge = (width * 0.13).toInt()
         bubbles.sortBy { it.top }
@@ -267,7 +267,7 @@ class QQAdapter : ChatAppAdapter {
             val dr = kotlin.math.abs((width - avatarEdge) - b.right)
             Msg(if (dr < dl) "me" else "other", b.text)
         }
-        return ChatSnapshot(title, msgs)
+        return ChatSnapshot(title, msgs, listAtEnd = ListEndSignal.detect(root))
     }
 
     private data class Bubble(val top: Int, val left: Int, val right: Int, val text: String)

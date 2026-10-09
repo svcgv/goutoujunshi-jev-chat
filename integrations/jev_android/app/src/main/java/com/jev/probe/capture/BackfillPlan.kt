@@ -1,26 +1,38 @@
 package com.jev.probe.capture
 
 /**
- * How a manual history backfill proceeds.
+ * Bounded plan for one automatic history backfill run.
  *
- * The user taps once; the app swipes up repeatedly, reading each screen, until it
- * has collected the target number of messages or runs out of history. This is
- * deliberately bounded: it drives the chat UI, so it must stop on a fixed target,
- * on stagnation, or when the user cancels — never scroll endlessly.
+ * The run drives the chat UI itself (scroll → settle → read → merge), so it must
+ * always terminate: on the target, on a swipe cap, or when scrolling stops
+ * producing anything new. It starts from the bottom of the conversation and
+ * walks toward older messages.
  */
 internal object BackfillPlan {
 
     /** Default target for one backfill run. */
-    const val TARGET_MESSAGES = 80
+    const val TARGET_MESSAGES = 50
 
-    /** Hard cap on swipes so a stuck screen cannot loop forever. */
-    const val MAX_SWIPES = 60
+    /** The start panel lets the user pick any value in this range. */
+    const val MIN_TARGET = 10
+    const val MAX_TARGET = 100
+
+    /** Hard cap on scrolls while collecting older messages. */
+    const val MAX_SWIPES = 200
+
+    /** Hard cap on scrolls used to reach the bottom before collecting. */
+    const val MAX_BOTTOM_SWIPES = 100
+
+    /** Hard cap on scrolls used to return to the bottom afterwards. */
+    const val MAX_RETURN_SWIPES = 100
 
     /** Stop after this many consecutive screens that add nothing new. */
     const val MAX_STALE_SCREENS = 3
 
+    fun clampTarget(n: Int): Int = n.coerceIn(MIN_TARGET, MAX_TARGET)
+
     /**
-     * Whether to keep scrolling.
+     * Whether to keep scrolling for older messages.
      *
      * @param collected messages gathered so far in THIS run.
      * @param target how many are wanted.

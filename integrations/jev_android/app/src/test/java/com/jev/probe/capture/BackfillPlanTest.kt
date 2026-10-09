@@ -1,5 +1,6 @@
 package com.jev.probe.capture
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -10,10 +11,14 @@ import org.junit.Test
  */
 class BackfillPlanTest {
 
+    @Test fun defaultTargetIsFifty() {
+        assertEquals(50, BackfillPlan.TARGET_MESSAGES)
+    }
+
     @Test fun stopsOnceTheTargetIsReached() {
-        assertFalse(BackfillPlan.shouldContinue(collected = 80))
+        assertFalse(BackfillPlan.shouldContinue(collected = 50))
         assertFalse(BackfillPlan.shouldContinue(collected = 120))
-        assertTrue(BackfillPlan.shouldContinue(collected = 79))
+        assertTrue(BackfillPlan.shouldContinue(collected = 49))
     }
 
     @Test fun stopsAtTheSwipeCapEvenIfTheTargetIsUnmet() {
@@ -37,8 +42,15 @@ class BackfillPlanTest {
         assertTrue(BackfillPlan.shouldContinue(collected = 19, target = 20))
     }
 
+    @Test fun targetIsClampedToSupportedRange() {
+        assertEquals(BackfillPlan.MIN_TARGET, BackfillPlan.clampTarget(0))
+        assertEquals(BackfillPlan.MIN_TARGET, BackfillPlan.clampTarget(-5))
+        assertEquals(BackfillPlan.MAX_TARGET, BackfillPlan.clampTarget(999))
+        assertEquals(50, BackfillPlan.clampTarget(50))
+    }
+
     @Test fun progressIsHumanReadable() {
         assertTrue(BackfillPlan.progress(35).contains("35"))
-        assertTrue(BackfillPlan.progress(35).contains("80"))
+        assertTrue(BackfillPlan.progress(35).contains("50"))
     }
 }

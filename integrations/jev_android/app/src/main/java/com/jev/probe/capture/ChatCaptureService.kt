@@ -287,7 +287,7 @@ open class ChatCaptureService : AccessibilityService() {
             val stillInChat = liveRoot?.let { adapters[activePkg]?.extract(it, resources) } != null
             if (ConversationSwitch.invalidatesOpaqueBinding(
                     event.packageName?.toString(), activePkg, packageName, livePkg, stillInChat)) {
-                cancelWork()
+                cancelWork("opaque-binding-invalidated")
             }
         }
 
@@ -315,7 +315,7 @@ open class ChatCaptureService : AccessibilityService() {
                     return
                 }
                 ForegroundApp.Kind.Foreign -> {
-                    if (ForegroundApp.shouldCancelWork(ForegroundApp.Kind.Foreign)) cancelWork()
+                    if (ForegroundApp.shouldCancelWork(ForegroundApp.Kind.Foreign)) cancelWork("foreign-app:$fg")
                     foregroundPkg = fg
                     val home = fg?.contains("launcher", ignoreCase = true) == true ||
                         fg == "com.miui.home" || fg == "com.android.systemui"
@@ -349,7 +349,7 @@ open class ChatCaptureService : AccessibilityService() {
         // Only act inside a chat window (the adapter returns null elsewhere).
         val rawSnapshot = adapter.extract(root, resources)
         if (rawSnapshot == null) {
-            if (activePkg != null) cancelWork()
+            if (activePkg != null) cancelWork("not-in-chat-window")
             if (pkg == WECHAT_PACKAGE) {
                 foregroundPkg = pkg
                 overlay?.setBindingSummary("窗口未识别 · 请进入一对一聊天后截屏或导入")
@@ -372,9 +372,12 @@ open class ChatCaptureService : AccessibilityService() {
         val switchedByMessages = sameKeyOrUnknown && currentSnapshot != null &&
             ConversationSwitch.isDifferentByMessages(
                 currentSnapshot!!.messages.map { it.text }, snapshot.messages.map { it.text })
-        if (switchedByMessages || ConversationSwitch.isNewConversation(
-                pkg != activePkg, trackedKey, incomingKey)) {
-            cancelWork()
+        val switchedByKey = ConversationSwitch.isNewConversation(pkg != activePkg, trackedKey, incomingKey)
+        if (switchedByMessages || switchedByKey) {
+            CrashLogger.diag(this, "switch pkg=$pkg active=${activePkg ?: "-"} changed=${pkg != activePkg} " +
+                "trackedKeyLen=${trackedKey?.length ?: -1} incomingKeyLen=${incomingKey?.length ?: -1} " +
+                "byMessages=$switchedByMessages byKey=$switchedByKey")
+            cancelWork("conversation-switch")
             activePkg = pkg
             currentSnapshot = snapshot
             // Moved to a different conversation: put the panel away. It comes
@@ -387,7 +390,7 @@ open class ChatCaptureService : AccessibilityService() {
         }
         updateBindingSummary(snapshot, pkg.orEmpty())
         if (pkg == WECHAT_PACKAGE && snapshot.messages.isEmpty()) {
-            overlay?.showIdle(snapshot.title)
+            overlay?.showIdle(snapshot.title ?: manualWindowTitle)
             return // Screenshot permission is user initiated, never prompted by background events.
         }
         // In a chat window but the tree holds no text (Feishu draws its bodies,
@@ -420,13 +423,21 @@ open class ChatCaptureService : AccessibilityService() {
         if (sig == lastSignature && showing) return
         // Same content but the bubble is gone (killed by MIUI, or we left and came
         // back) → just put the bubble back, do NOT re-analyze (saves tokens/time).
-        if (sig == lastSignature && !showing) { overlay?.showIdle(snapshot.title); return }
+        if (sig == lastSignature && !showing) { overlay?.showIdle(snapshot.title ?: manualWindowTitle); return }
+        // New visible content in the SAME window is not a conversation switch, so
+        // the name the user confirmed for it must survive the reset below.
+        // cancelWork() clears it, and for a window whose own title is unreadable
+        // (WeChat) that name is the only thing resolving the binding — dropping it
+        // on every new message or scroll is what made the panel report "未绑定对象".
+        val rememberedTitle = manualWindowTitle
+            ?: snapshot.title?.takeUnless { isTransientTitle(it) }
+            ?: boundContact(snapshot.title, pkg.orEmpty())?.title
         cancelWork()
         activePkg = pkg
+        manualWindowTitle = rememberedTitle
         currentSnapshot = snapshot
-        // Anything else reaching here is a genuinely different conversation (new
-        // app, or new content in this one) — a leftover judgment/candidates from
-        // whatever was shown before must not leak into it.
+        // A leftover judgment/candidates from whatever was shown before must not
+        // leak into the new content.
         overlay?.resetForNewConversation()
         lastSignature = sig
         updateBindingSummary(snapshot, pkg.orEmpty())
@@ -436,7 +447,7 @@ open class ChatCaptureService : AccessibilityService() {
         // Trigger only when the newest message is from the other person, and only
         // if auto-analyze is on. Otherwise show the idle bubble (tap to analyze).
         if (snapshot.latestFrom != "other" || !prefs.autoAnalyze) {
-            overlay?.showIdle(snapshot.title); return
+            overlay?.showIdle(snapshot.title ?: manualWindowTitle); return
         }
 
         pendingSnapshot = snapshot
@@ -459,7 +470,8 @@ open class ChatCaptureService : AccessibilityService() {
         if (isTransientTitle(snapshot.title)) snapshot.copy(title = null) else snapshot
 
     /** Invalidate every callback before clearing UI state or starting another round. */
-    private fun cancelWork() {
+    private fun cancelWork(reason: String = "unspecified") {
+        CrashLogger.diag(this, "service cancelWork reason=$reason")
         backfillActive = false
         backfillToken = null
         stopProjectionSession()
@@ -511,14 +523,32 @@ open class ChatCaptureService : AccessibilityService() {
             store.binding(key, pkg)?.let {
                 if (manualWindowTitle.isNullOrBlank()) manualWindowTitle = it.title
                 Log.i(TAG, "bind lookup pkg=$pkg keyLen=${key.length} hit=byKey")
+                CrashLogger.diag(this, "bindLookup hit=byKey")
                 return it
             }
         }
+        // The readable title is not one we have a binding for. That does NOT mean
+        // the window is unbound: WeChat's title can differ from the stored one
+        // (the user renamed the contact after binding, or the app renders a prefix
+        // we did not see then). Reuse the name already confirmed for THIS window
+        // earlier in the session before falling back to the message fingerprint,
+        // which stops matching as soon as the visible messages scroll past the
+        // few lines recorded at bind time.
+        val remembered = manualWindowTitle?.trim()
+        if (!remembered.isNullOrBlank() && remembered != key) {
+            store.binding(remembered, pkg)?.let {
+                Log.i(TAG, "bind lookup pkg=$pkg hit=byRememberedTitle")
+                CrashLogger.diag(this, "bindLookup hit=byRememberedTitle")
+                return it
+            }
+        }
+
         // Title unreadable: identify the conversation by the messages on screen.
         val onScreen = currentSnapshot?.messages?.map { it.text }.orEmpty()
         ConversationFingerprints.match(store.bindingsForApp(pkg), pkg, onScreen)?.let {
             manualWindowTitle = it.title
             Log.i(TAG, "bind lookup pkg=$pkg hit=byFingerprint")
+            CrashLogger.diag(this, "bindLookup hit=byFingerprint")
             return it
         }
         // Last resort: a single binding in this app is unambiguous.
@@ -527,6 +557,10 @@ open class ChatCaptureService : AccessibilityService() {
         if (only != null) manualWindowTitle = only.title
         Log.i(TAG, "bind lookup pkg=$pkg titleLen=${title?.length ?: -1} " +
             "keyLen=${key?.length ?: -1} appRows=${rows.size} fallbackHit=${only != null}")
+        // Structure only: lengths and counts, never the title or message text.
+        CrashLogger.diag(this, "bindLookup MISS pkg=$pkg titleLen=${title?.length ?: -1} " +
+            "keyLen=${key?.length ?: -1} manualTitle=${!manualWindowTitle.isNullOrBlank()} " +
+            "onScreen=${onScreen.size} appRows=${rows.size} totalBindings=${store.bindings().size}")
         return only
     }
 
@@ -552,6 +586,7 @@ open class ChatCaptureService : AccessibilityService() {
         val store = KbStore.get(this)
         val binding = boundContact(snapshot.title, pkg)
         val contact = binding?.let { store.contact(it.contactId) }
+        CrashLogger.diag(this, "bindingSummary bound=${contact != null}")
         overlay?.setBindingSummary(if (contact == null) "未绑定对象 · 不加载历史"
             else "对象：${contact.name} · 已存 ${store.logSize(contact.id)} 条 · " +
                 if (binding.remember && prefs.contextEnabled) "记忆已启用" else "记忆暂停")
@@ -1123,8 +1158,25 @@ open class ChatCaptureService : AccessibilityService() {
             onCancel = {
                 if (session.isCurrent(token)) {
                     session.confirmReview(token)
-                    cancelWork()
-                    overlay?.showIdle(title)
+                    backfillActive = false
+                    backfillToken = null
+                    stopProjectionSession()
+                    overlay?.setPanelTouchPassthrough(false)
+                    overlay?.finishReview()
+                    // Dropping a pending transcript must not wipe the tracked
+                    // conversation: re-read the live window so the panel keeps
+                    // showing the correct binding instead of "未绑定对象".
+                    val liveRoot = rootInActiveWindow
+                    val liveSnap = liveRoot?.takeIf { it.packageName?.toString() == pkg }
+                        ?.let { adapters[pkg]?.extract(it, resources) }
+                    if (liveSnap != null && !liveSnap.isGroup) {
+                        activePkg = pkg
+                        currentSnapshot = liveSnap
+                        updateBindingSummary(liveSnap, pkg)
+                        overlay?.showIdle(liveSnap.title ?: title)
+                    } else {
+                        overlay?.showIdle(title)
+                    }
                 }
             })
     }
@@ -1496,7 +1548,7 @@ open class ChatCaptureService : AccessibilityService() {
         val sig = snapshot.signature()
         // Manual taps always re-run; the automatic path dedupes like the tree path.
         if (!manual && sig == lastSignature) {
-            if (overlay?.isShowing() != true) overlay?.showIdle(snapshot.title)
+            if (overlay?.isShowing() != true) overlay?.showIdle(snapshot.title ?: manualWindowTitle)
             return
         }
         // Same rule as the tree path: past this point the conversation is either
@@ -1506,7 +1558,7 @@ open class ChatCaptureService : AccessibilityService() {
         lastSignature = sig
 
         if (shouldReviewOcr(manual, prefs.ocrAutoAnalyze, snapshot.latestFrom)) reviewSnapshot(snapshot, pkg)
-        else overlay?.showIdle(snapshot.title)
+        else overlay?.showIdle(snapshot.title ?: manualWindowTitle)
     }
 
     /** Both tree extraction and OCR require a reviewed transcript before model calls. */
@@ -1537,7 +1589,7 @@ open class ChatCaptureService : AccessibilityService() {
                 cancelWork()
                 currentSnapshot = snapshot
                 activePkg = pkg
-                overlay?.showIdle(snapshot.title)
+                overlay?.showIdle(snapshot.title ?: manualWindowTitle)
             }
         })
         if (overlay?.isShowing() != true) cancelWork()

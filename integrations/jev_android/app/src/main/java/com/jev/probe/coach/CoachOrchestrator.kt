@@ -6,6 +6,7 @@ import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.Choice
 import com.jev.probe.core.GoutouGuidance
 import com.jev.probe.core.Prefs
+import com.jev.probe.core.ModelProtocol
 import com.jev.probe.core.kb.ChatContext
 import com.jev.probe.core.kb.KbStore
 import com.jev.probe.core.WorkScope
@@ -54,7 +55,15 @@ class CoachOrchestrator(
             boundary = true, safety = safety,
             facts = listOf("聊天或记忆中已有明确停止联系的要求"),
             unknowns = listOf("对方是否愿意在安全边界内继续沟通"))
-        if (!prefs.usesChatStrategy()) {
+        val judgeRoute = prefs.judgeRoute()
+        if (judgeRoute == null || judgeRoute.key.isBlank()) {
+            return CoachDecision(
+                strategy = "未配置",
+                unknowns = listOf("请先在设置中选择判断模型并填写所属服务密钥"),
+                safety = safety,
+                error = "请先配置判断模型")
+        }
+        if (judgeRoute.protocol != ModelProtocol.CHAT) {
             return CoachDecision(
                 strategy = "由回复模型统一判断",
                 facts = prepared.snapshot?.messages?.takeLast(3)?.map { it.text }.orEmpty(),
@@ -81,6 +90,9 @@ class CoachOrchestrator(
         token.checkActive()
         val prepared = prepare(request)
         val decision = WorkScope.run(token) { decide(prepared) }
+        if (decision.strategy == "未配置") {
+            return CoachResponse("请先在设置中配置判断模型和所属服务密钥。", error = decision.error)
+        }
         if (decision.boundary && prepared.task in listOf(CoachTask.OPEN, CoachTask.REPLY)) {
             return CoachResponse(
                 consultation = if (decision.safety)
@@ -115,7 +127,7 @@ class CoachOrchestrator(
     private fun rankCandidates(request: CoachRequest, decision: CoachDecision,
                                response: CoachResponse, token: WorkToken): CoachResponse {
         if (response.candidates.size < 2 || response.error != null) return response
-        if (!prefs.usesChatStrategy()) return response.copy(
+        if (prefs.judgeRoute()?.protocol != ModelProtocol.CHAT) return response.copy(
             rankingNotice = "旧 Jev 路线不调用独立候选排序；顺序由回复模型给出。")
         val judgment = Analysis(
             trueIntent = null, dangerLevel = null, sheNeeds = null, shouldReplyNow = null,

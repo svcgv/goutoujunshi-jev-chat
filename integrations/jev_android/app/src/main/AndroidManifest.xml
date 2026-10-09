@@ -32,6 +32,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".ServiceModelActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".KnowledgeActivity"
             android:exported="false" />
 

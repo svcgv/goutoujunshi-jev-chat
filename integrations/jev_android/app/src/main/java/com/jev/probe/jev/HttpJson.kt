@@ -121,6 +121,67 @@ object HttpJson {
         throw last ?: ApiException(route, null, "请求失败")
     }
 
+    /** GET-JSON for model discovery. Credentials stay on the selected service origin. */
+    fun get(url: String, key: String, route: String,
+            extraHeaders: Map<String, String> = emptyMap()): JSONObject {
+        var attempt = 0
+        var last: ApiException? = null
+        while (attempt < MAX_ATTEMPTS) {
+            WorkScope.checkActive()
+            var conn: HttpURLConnection? = null
+            var detach: (() -> Unit)? = null
+            try {
+                conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    instanceFollowRedirects = false
+                    connectTimeout = 15000
+                    readTimeout = 40000
+                    setRequestProperty("Authorization", "Bearer $key")
+                    setRequestProperty("Accept", "application/json")
+                    extraHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
+                }
+                val connection = conn
+                detach = WorkScope.onCancel { connection.disconnect() }
+                WorkScope.checkActive()
+                val code = conn.responseCode
+                if (code == 429 || code == 529) {
+                    last = ApiException(route, code, "服务繁忙，已重试")
+                    attempt++
+                    if (attempt < MAX_ATTEMPTS) Thread.sleep(500L * (1L shl attempt))
+                    continue
+                }
+                if (code !in 200..299) {
+                    val errText = readBody(conn.errorStream)
+                    throw ApiException(route, code, errText.ifBlank { "（响应体为空）" })
+                }
+                val text = readBody(conn.inputStream)
+                WorkScope.checkActive()
+                if (text.isBlank()) throw ApiException(route, code, "响应体为空")
+                return JSONObject(text)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw CancellationException("本轮任务已取消")
+            } catch (e: ApiException) {
+                WorkScope.checkActive()
+                if (e.status != null && e.status in 400..499) throw e
+                last = e
+                attempt++
+                if (attempt < MAX_ATTEMPTS) Thread.sleep(500L * (1L shl attempt))
+            } catch (e: Exception) {
+                WorkScope.checkActive()
+                last = ApiException(route, null, describe(e))
+                attempt++
+                if (attempt < MAX_ATTEMPTS) Thread.sleep(500L * (1L shl attempt))
+            } finally {
+                detach?.invoke()
+                conn?.disconnect()
+            }
+        }
+        throw last ?: ApiException(route, null, "请求失败")
+    }
+
     /** Body text, or "" — a null stream or a read failure never costs us the status code. */
     private fun readBody(stream: java.io.InputStream?): String {
         stream ?: return ""

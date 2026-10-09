@@ -4,11 +4,11 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
-import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -20,18 +20,22 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.jev.probe.core.ChatSnapshot
+import com.jev.probe.core.InterfaceBindings
+import com.jev.probe.core.FeatureModelOverrides
+import com.jev.probe.core.ModelConfigSnapshot
+import com.jev.probe.core.ModelConfigStore
+import com.jev.probe.core.ModelProtocol
 import com.jev.probe.core.Msg
 import com.jev.probe.core.Prefs
-import com.jev.probe.core.RouteKeys
 import com.jev.probe.core.kb.KbSelfCheck
 import com.jev.probe.core.kb.KbStore
 import com.jev.probe.jev.JudgeClient
 import com.jev.probe.jev.ReplyClient
 import com.jev.probe.jev.VisionClient
 import com.jev.probe.jev.StrategyClient
-import com.jev.probe.core.StrategyRoute
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
@@ -45,9 +49,20 @@ class SettingsActivity : AppCompatActivity() {
     private val ink = Color.parseColor("#111827")
     private val sub = Color.parseColor("#6B7280")
     private val pillOff = Color.parseColor("#EEF1F5")
-
-    /** Selected provider index per card, held so Save can read it back. */
-    private var judgeProviderIdx = 0
+    private var snapshot = ModelConfigSnapshot()
+    private var judgeRef = ""
+    private var replyRef = ""
+    private var visionRef = ""
+    private var openRef = ""
+    private var endRef = ""
+    private var consultRef = ""
+    private lateinit var judgeValue: TextView
+    private lateinit var replyValue: TextView
+    private lateinit var visionValue: TextView
+    private lateinit var openValue: TextView
+    private lateinit var endValue: TextView
+    private lateinit var consultValue: TextView
+    private var awaitingCatalog = false
 
     private fun dp(v: Int) = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).roundToInt()
@@ -55,8 +70,6 @@ class SettingsActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
-        Log.i(TAG, "settings opened judgeKey.len=${prefs.judgeKey.length}" +
-            " replyKey.len=${prefs.replyKey.length} visionKey.len=${prefs.visionKey.length}")
         window.decorView.setBackgroundColor(Color.parseColor("#F2F3F5"))
 
         val scroll = ScrollView(this)
@@ -71,261 +84,102 @@ class SettingsActivity : AppCompatActivity() {
 
         // =================== 接口 ===================
         root.addView(section("接口"))
+        snapshot = prefs.modelSnapshot()
+        judgeRef = snapshot.bindings.judgeModelId
+        replyRef = snapshot.bindings.replyModelId
+        visionRef = snapshot.bindings.visionModelId
+        openRef = snapshot.overrides.openModelId
+        endRef = snapshot.overrides.endModelId
+        consultRef = snapshot.overrides.consultModelId
 
-        val strategyCard = card()
-        strategyCard.addView(cardTitle("策略判断"))
-        strategyCard.addView(text("无需 Jev：CLI-Proxy-API 可接 DeepSeek / GPT；回复模型在下方独立配置。", 12f, sub))
-        val strategyProviders = listOf("jev", "deepseek", Prefs.STRATEGY_COMPATIBLE)
-        var strategyIdx = strategyProviders.indexOf(prefs.strategyProvider).coerceAtLeast(0)
-        val strategyBaseEdit = edit(prefs.strategyBaseUrl, Prefs.DEFAULT_PROXY_BASE)
-        val strategyModelEdit = edit(prefs.strategyModel, "填写代理 /v1/models 返回的模型 ID")
-        val strategyKeyEdit = edit(prefs.strategyKey, "代理的客户端 API Key，不是上游登录凭据", password = true)
-        strategyCard.addView(pills(listOf("Jev", "DeepSeek 官方", "CLI-Proxy-API / 兼容"), strategyIdx) {
-            if (it != strategyIdx && it != 0) {
-                strategyKeyEdit.setText("")
-                strategyModelEdit.setText(if (it == 1) Prefs.DEEPSEEK_MODEL else "")
-            }
-            strategyIdx = it
+        val manageCard = card()
+        manageCard.addView(cardTitle("服务与模型"))
+        manageCard.addView(text("每个服务只保存一次地址和密钥；同一服务下可添加多个模型。" +
+            "接口只保存所选模型引用，服务修改后所有引用自动生效。", 12f, sub))
+        manageCard.addView(cardBtn("管理服务与模型") {
+            awaitingCatalog = true
+            startActivity(Intent(this, ServiceModelActivity::class.java))
         })
-        strategyCard.addView(label("策略 Base URL（仅兼容路线使用，包含 /v1）"))
-        strategyCard.addView(strategyBaseEdit)
-        strategyCard.addView(label("策略模型 ID"))
-        strategyCard.addView(strategyModelEdit)
-        strategyCard.addView(label("策略接口密钥"))
-        strategyCard.addView(strategyKeyEdit)
-        strategyCard.addView(text("同一协议、主机和端口可复用下方回复密钥；跨服务须单独填写。" +
-            "兼容路线不请求 logprobs，也不发送 DeepSeek 专用参数；模型自评不是成功率。" +
-            "127.0.0.1 指手机本机；电脑代理可通过 adb reverse tcp:8317 tcp:8317 连接。", 11f, sub))
-        val strategyResult = resultText()
-        strategyCard.addView(cardBtn("测试策略判断") {
-            if (strategyIdx == 0) {
-                strategyResult.text = "Jev 请使用下方判断接口测试"; return@cardBtn
-            }
-            val model = strategyModelEdit.text.toString().trim()
-            val provider = strategyProviders[strategyIdx]
-            val base = if (provider == "deepseek") Prefs.DEEPSEEK_BASE else strategyBaseEdit.text.toString().trim()
-            val endpoint = try { StrategyRoute.endpoint(base) } catch (_: Exception) {
-                strategyResult.text = "请填写有效的 HTTP(S) 策略 Base URL"; return@cardBtn
-            }
-            val key = RouteKeys.strategy(strategyKeyEdit.text.toString().trim(),
-                replyKeyEdit.text.toString().trim(), replyBaseInput.text.toString().trim(), endpoint)
-            if (model.isBlank() || key.isBlank()) {
-                strategyResult.text = "请填写策略模型 ID 和密钥"; return@cardBtn
-            }
-            strategyResult.text = "测试中…（仅发送示例对话）"
-            val probe = draftPrefs("strategy_probe") {
-                strategyProvider = provider; strategyBaseUrl = base; strategyModel = model; strategyKey = key
-            }
-            worker.execute {
-                val demo = ChatSnapshot("连通测试", listOf(Msg("other", "这周有点忙，下周再说吧")))
-                val result = StrategyClient(probe, applicationContext).judge(demo, Prefs.DEFAULT_REL)
-                main.post { strategyResult.text = result.error ?: "成功 · ${result.strategy} · " +
-                    (if (result.strategyWeights.isEmpty()) "模型判断，非成功率" else "已取得策略相对权重") }
-            }
-        })
-        strategyCard.addView(strategyResult)
-        root.addView(strategyCard)
+        manageCard.addView(text("当前：${snapshot.services.size} 个服务，${snapshot.models.size} 个模型", 11.5f, sub))
+        root.addView(manageCard)
 
-        // --- 判断接口（Jev） ---
         val judgeCard = card()
-        judgeCard.addView(cardTitle("判断接口（Jev）"))
-        judgeCard.addView(text("选 Jev 策略时使用；选 DeepSeek 或兼容策略时可留空。", 12f, sub))
-
-        val judgeBaseEdit = edit(prefs.judgeBaseUrl, Prefs.DEFAULT_JUDGE_BASE_OPENROUTER)
-        val judgeModelEdit = edit(prefs.judgeModel, Prefs.DEFAULT_JUDGE_MODEL_OPENROUTER)
-        judgeProviderIdx = when (prefs.judgeProvider) {
-            Prefs.PROVIDER_TYPESAFE -> 1
-            Prefs.PROVIDER_CUSTOM -> 2
-            else -> 0
-        }
-        judgeCard.addView(pills(
-            listOf("OpenRouter", "TypeSafe 直连", "自定义"), judgeProviderIdx) { idx ->
-            judgeProviderIdx = idx
-            when (idx) {
-                0 -> {
-                    judgeBaseEdit.setText(Prefs.DEFAULT_JUDGE_BASE_OPENROUTER)
-                    judgeModelEdit.setText(Prefs.DEFAULT_JUDGE_MODEL_OPENROUTER)
-                }
-                1 -> {
-                    judgeBaseEdit.setText(Prefs.DEFAULT_JUDGE_BASE_TYPESAFE)
-                    judgeModelEdit.setText(Prefs.DEFAULT_JUDGE_MODEL_TYPESAFE)
-                }
-                // Custom POSTs the box verbatim, so a preset HOST left in the box
-                // would hit the API root. Expand it into the full endpoint the
-                // preset would have used; anything hand-typed is left alone.
-                2 -> judgeBaseEdit.setText(expandJudgeUrl(judgeBaseEdit.text.toString()))
-            }
+        judgeCard.addView(cardTitle("判断模型"))
+        judgeCard.addView(text("选择 Jev 或聊天模型。聊天模型走现有策略判断；Jev 模型走专用 decisions 接口。", 12f, sub))
+        judgeValue = modelValue()
+        judgeCard.addView(judgeValue)
+        judgeCard.addView(cardBtn("选择判断模型") {
+            pickModel("选择判断模型", null, false, true, judgeRef) { judgeRef = it; refreshModelLabels() }
         })
-        judgeCard.addView(label("Base URL"))
-        judgeCard.addView(judgeBaseEdit)
-        judgeCard.addView(text("OpenRouter 拼 /alpha/decisions；TypeSafe 拼 /v1/systemone；自定义按原样 POST。",
-            11f, sub))
-        judgeCard.addView(label("密钥"))
-        judgeCard.addView(edit(prefs.judgeKey, "sk-...", password = true).also { judgeKeyEdit = it })
-        judgeCard.addView(label("模型"))
-        judgeCard.addView(judgeModelEdit)
         val judgeResult = resultText()
-        judgeCard.addView(cardBtn("测试判断") {
-            val base = judgeBaseEdit.text.toString().trim()
-            val key = judgeKeyEdit.text.toString().trim()
-            val model = judgeModelEdit.text.toString().trim()
-            if (key.isBlank()) { judgeResult.text = "请先填密钥"; return@cardBtn }
-            judgeResult.text = "测试中…"
-            // Provider follows the address when it is still a known preset host,
-            // so a stale pill selection cannot send a TypeSafe path to OpenRouter.
-            val provider = resolveJudgeProvider(judgeProviderIdx, base)
-            if (provider == Prefs.PROVIDER_CUSTOM && base.isBlank()) {
-                judgeResult.text = "自定义档要填完整 URL（带路径）"; return@cardBtn
-            }
-            // Custom means we know nothing about the endpoint — guessing a model
-            // name here would test something the user never asked for.
-            if (provider == Prefs.PROVIDER_CUSTOM && model.isBlank()) {
-                judgeResult.text = "请填写模型名"; return@cardBtn
-            }
-            val probe = draftPrefs(SCRATCH_JUDGE) {
-                judgeProvider = provider
-                judgeBaseUrl = base.ifBlank { defaultJudgeBase(provider) }
-                judgeKey = key
-                judgeModel = model.ifBlank { defaultJudgeModel(provider) }
-            }
-            worker.execute {
-                val t0 = System.currentTimeMillis()
-                val demo = ChatSnapshot("连通测试", listOf(
-                    Msg("other", "在吗？"), Msg("me", "在")))
-                val a = JudgeClient(probe).judge(demo, prefs.relationship)
-                val ms = System.currentTimeMillis() - t0
-                main.post {
-                    judgeResult.text = if (a.error != null) "失败（${ms}ms）：${a.error}"
-                    else "成功 ${ms}ms · 意图=${a.trueIntent?.choice ?: "?"}" +
-                        "（置信 ${pct(a.trueIntent?.confidence)}）"
-                }
-            }
-        })
+        judgeCard.addView(cardBtn("测试判断") { testJudge(judgeResult) })
         judgeCard.addView(judgeResult)
         root.addView(judgeCard)
 
-        // --- 回复接口 ---
         val replyCard = card()
-        replyCard.addView(cardTitle("回复接口"))
-        replyCard.addView(text("生成 3 条候选回复。任何 OpenAI 兼容地址，填到 /v1 为止。", 12f, sub))
-
-        val replyBaseEdit = edit(prefs.replyBaseUrl, Prefs.DEFAULT_REPLY_BASE).also { replyBaseInput = it }
-        val replyModelEdit = edit(prefs.replyModel, Prefs.DEFAULT_REPLY_MODEL)
-        val replyIdx = when (prefs.replyBaseUrl.trim().trimEnd('/')) {
-            Prefs.DEFAULT_REPLY_BASE -> 0
-            Prefs.DEEPSEEK_BASE -> 1
-            Prefs.DASHSCOPE_BASE -> 2
-            Prefs.DEFAULT_PROXY_BASE -> 3
-            else -> 4
-        }
-        replyCard.addView(pills(
-            listOf("OpenRouter", "DeepSeek 官方", "通义兼容", "CLI-Proxy-API", "自定义"), replyIdx) { idx ->
-            when (idx) {
-                0 -> { replyBaseEdit.setText(Prefs.DEFAULT_REPLY_BASE); replyModelEdit.setText(Prefs.DEFAULT_REPLY_MODEL) }
-                1 -> { replyBaseEdit.setText(Prefs.DEEPSEEK_BASE); replyModelEdit.setText(Prefs.DEEPSEEK_MODEL) }
-                2 -> { replyBaseEdit.setText(Prefs.DASHSCOPE_BASE); replyModelEdit.setText(Prefs.DASHSCOPE_MODEL) }
-                3 -> { replyBaseEdit.setText(Prefs.DEFAULT_PROXY_BASE); replyModelEdit.setText("") }
-            }
+        replyCard.addView(cardTitle("回复模型"))
+        replyCard.addView(text("生成普通回复、详细分析、解释和口吻改写；必须是 OpenAI 兼容聊天模型。", 12f, sub))
+        replyValue = modelValue()
+        replyCard.addView(replyValue)
+        replyCard.addView(cardBtn("选择回复模型") {
+            pickModel("选择回复模型", ModelProtocol.CHAT, false, true, replyRef) { replyRef = it; refreshModelLabels() }
         })
-        replyCard.addView(label("Base URL"))
-        replyCard.addView(replyBaseEdit)
-        replyCard.addView(label("密钥"))
-        replyCard.addView(edit(prefs.replyKey, "同一服务可留空；跨服务请单独填写", password = true).also { replyKeyEdit = it })
-        replyCard.addView(label("模型"))
-        replyCard.addView(replyModelEdit)
         val replyResult = resultText()
-        replyCard.addView(cardBtn("测试回复") {
-            val base = replyBaseEdit.text.toString().trim()
-            val model = replyModelEdit.text.toString().trim()
-            val probe = draftPrefs(SCRATCH_REPLY) {
-                val judgeBase = judgeBaseEdit.text.toString().trim()
-                judgeProvider = resolveJudgeProvider(judgeProviderIdx, judgeBase)
-                judgeBaseUrl = judgeBase.ifBlank { defaultJudgeBase(judgeProvider) }
-                judgeKey = judgeKeyEdit.text.toString().trim()
-                replyBaseUrl = base.ifBlank { Prefs.DEFAULT_REPLY_BASE }
-                replyKey = replyKeyEdit.text.toString().trim()
-                replyModel = model.ifBlank { Prefs.DEFAULT_REPLY_MODEL }
-            }
-            if (probe.effectiveReplyKey().isBlank()) { replyResult.text = "请填写回复接口密钥；仅同一服务可共用判断密钥"; return@cardBtn }
-            replyResult.text = "测试中…"
-            worker.execute {
-                val t0 = System.currentTimeMillis()
-                var err: String? = null
-                val out = try {
-                    ReplyClient(probe).ping()
-                } catch (e: Exception) { err = e.message; "" }
-                val ms = System.currentTimeMillis() - t0
-                main.post {
-                    replyResult.text = if (err != null) "失败（${ms}ms）：$err"
-                    else "成功 ${ms}ms · 返回：${out.replace("\n", " ").take(60)}"
-                }
-            }
-        })
+        replyCard.addView(cardBtn("测试回复") { testReply(replyResult) })
         replyCard.addView(replyResult)
         root.addView(replyCard)
 
-        // --- 视觉接口 ---
         val visionCard = card()
-        visionCard.addView(cardTitle("视觉接口（OCR 用，可先不填）"))
-        visionCard.addView(text("读不到控件树时可选图片识别；截图会发到所选接口，并可能计费。", 12f, sub))
-
-        val visionBaseEdit = edit(prefs.visionBaseUrl, Prefs.DEFAULT_VISION_BASE)
-        val visionModelEdit = edit(prefs.visionModel, Prefs.DEFAULT_VISION_MODEL)
-        val visionIdx = when (prefs.visionBaseUrl.trim().trimEnd('/')) {
-            Prefs.DEFAULT_VISION_BASE -> 0
-            Prefs.DEEPSEEK_BASE -> 1
-            Prefs.DASHSCOPE_BASE -> 2
-            else -> 3
-        }
-        visionCard.addView(pills(
-            listOf("OpenRouter", "DeepSeek", "通义兼容", "自定义"), visionIdx) { idx ->
-            when (idx) {
-                0 -> { visionBaseEdit.setText(Prefs.DEFAULT_VISION_BASE); visionModelEdit.setText(Prefs.DEFAULT_VISION_MODEL) }
-                1 -> { visionBaseEdit.setText(Prefs.DEEPSEEK_BASE); visionModelEdit.setText("deepseek-flash") }
-                2 -> { visionBaseEdit.setText(Prefs.DASHSCOPE_BASE); visionModelEdit.setText(Prefs.DASHSCOPE_VISION_MODEL) }
+        visionCard.addView(cardTitle("视觉模型（OCR 用，可不配置）"))
+        visionCard.addView(text("只显示已标记“支持图片”的聊天模型。测试只发送 1×1 测试图，不读取聊天截图。", 12f, sub))
+        visionValue = modelValue()
+        visionCard.addView(visionValue)
+        visionCard.addView(cardBtn("选择视觉模型") {
+            pickModel("选择视觉模型", ModelProtocol.CHAT, true, true, visionRef) {
+                visionRef = it
+                refreshModelLabels()
             }
         })
-        visionCard.addView(label("Base URL"))
-        visionCard.addView(visionBaseEdit)
-        visionCard.addView(label("密钥"))
-        visionCard.addView(edit(prefs.visionKey, "同一服务可留空；跨服务请单独填写", password = true).also { visionKeyEdit = it })
-        visionCard.addView(label("模型"))
-        visionCard.addView(visionModelEdit)
         val visionResult = resultText()
-        visionCard.addView(cardBtn("测试视觉") {
-            val visionBase = visionBaseEdit.text.toString().trim()
-            if (!VisionClient.supportsVision(visionBase.ifBlank { Prefs.DEFAULT_VISION_BASE })) {
-                visionResult.text = GUARD_NO_VISION
-                return@cardBtn
-            }
-            val probe = draftPrefs(SCRATCH_VISION) {
-                val judgeBase = judgeBaseEdit.text.toString().trim()
-                judgeProvider = resolveJudgeProvider(judgeProviderIdx, judgeBase)
-                judgeBaseUrl = judgeBase.ifBlank { defaultJudgeBase(judgeProvider) }
-                judgeKey = judgeKeyEdit.text.toString().trim()
-                replyBaseUrl = replyBaseEdit.text.toString().trim().ifBlank { Prefs.DEFAULT_REPLY_BASE }
-                replyKey = replyKeyEdit.text.toString().trim()
-                visionBaseUrl = visionBase
-                visionKey = visionKeyEdit.text.toString().trim()
-                visionModel = visionModelEdit.text.toString().trim().ifBlank { Prefs.DEFAULT_VISION_MODEL }
-            }
-            if (probe.effectiveVisionKey().isBlank()) { visionResult.text = "请填写视觉接口密钥；仅同一服务可共用密钥"; return@cardBtn }
-            visionResult.text = "测试中…"
-            worker.execute {
-                val t0 = System.currentTimeMillis()
-                var err: String? = null
-                val out = try {
-                    VisionClient(probe).ask(whitePixelJpegB64(), "这张图是什么颜色？只回答颜色。")
-                } catch (e: Exception) { err = e.message; "" }
-                val ms = System.currentTimeMillis() - t0
-                main.post {
-                    visionResult.text = if (err != null) "失败（${ms}ms）：$err"
-                    else "成功 ${ms}ms · 返回：${out.replace("\n", " ").take(60)}"
-                }
-            }
-        })
+        visionCard.addView(cardBtn("测试视觉") { testVision(visionResult) })
         visionCard.addView(visionResult)
         root.addView(visionCard)
+
+        // =================== 功能模型 ===================
+        root.addView(section("功能模型"))
+        val featureCard = card()
+        featureCard.addView(cardTitle("军师任务的生成模型"))
+        featureCard.addView(text("默认跟随全局回复模型；也可为单个功能选择其他聊天模型。" +
+            "普通“帮我回复”始终使用全局回复模型。", 12f, sub))
+        openValue = modelValue()
+        featureCard.addView(label("发起聊天"))
+        featureCard.addView(openValue)
+        featureCard.addView(cardBtn("选择发起聊天模型") {
+            pickModel("发起聊天生成模型", ModelProtocol.CHAT, false, true, openRef) {
+                openRef = it
+                refreshModelLabels()
+            }
+        })
+        endValue = modelValue()
+        featureCard.addView(label("暂时离开会话"))
+        featureCard.addView(endValue)
+        featureCard.addView(cardBtn("选择暂时离开模型") {
+            pickModel("暂时离开生成模型", ModelProtocol.CHAT, false, true, endRef) {
+                endRef = it
+                refreshModelLabels()
+            }
+        })
+        consultValue = modelValue()
+        featureCard.addView(label("问军师"))
+        featureCard.addView(consultValue)
+        featureCard.addView(cardBtn("选择问军师模型") {
+            pickModel("问军师生成模型", ModelProtocol.CHAT, false, true, consultRef) {
+                consultRef = it
+                refreshModelLabels()
+            }
+        })
+        root.addView(featureCard)
+        clampModelReferences()
 
         // =================== 分析 ===================
         root.addView(section("分析"))
@@ -459,51 +313,21 @@ class SettingsActivity : AppCompatActivity() {
 
         // =================== 保存 ===================
         root.addView(primaryBtn("保存全部设置") {
-            if (strategyIdx != 0) {
-                try {
-                    StrategyRoute.endpoint(if (strategyIdx == 1) Prefs.DEEPSEEK_BASE else strategyBaseEdit.text.toString())
-                    require(strategyModelEdit.text.toString().isNotBlank())
-                } catch (_: Exception) {
-                    Toast.makeText(this, "请填写有效策略地址和模型 ID", Toast.LENGTH_LONG).show()
-                    return@primaryBtn
-                }
-            }
-            if (replyModelEdit.text.toString().isBlank()) {
-                Toast.makeText(this, "请填写回复模型 ID", Toast.LENGTH_LONG).show()
+            snapshot = prefs.modelSnapshot()
+            clampModelReferences()
+            val updated = snapshot.copy(
+                bindings = InterfaceBindings(judgeRef, replyRef, visionRef),
+                overrides = FeatureModelOverrides(openRef, endRef, consultRef)
+            )
+            runCatching { updated.validate() }.onFailure {
+                Toast.makeText(this, it.message ?: "模型关联无效", Toast.LENGTH_LONG).show()
                 return@primaryBtn
             }
-            prefs.strategyProvider = strategyProviders[strategyIdx]
-            prefs.strategyBaseUrl = strategyBaseEdit.text.toString().trim()
-            prefs.strategyModel = strategyModelEdit.text.toString().trim()
-            prefs.strategyKey = strategyKeyEdit.text.toString().trim()
-            // Address wins over the pill: a preset HOST in the box means that
-            // preset's provider (and so its path), whatever the pill last said.
-            val judgeBaseTyped = judgeBaseEdit.text.toString().trim()
-            val judgeProv = resolveJudgeProvider(judgeProviderIdx, judgeBaseTyped)
-            val judgeModelTyped = judgeModelEdit.text.toString().trim()
-            prefs.judgeProvider = judgeProv
-            // Blank falls back to THIS provider's preset — never OpenRouter's by
-            // default. Custom is left exactly as typed (blank included): guessing
-            // a URL for it would silently point somewhere the user did not choose.
-            prefs.judgeBaseUrl = when {
-                judgeBaseTyped.isNotBlank() -> judgeBaseTyped
-                judgeProv == Prefs.PROVIDER_CUSTOM -> ""
-                else -> defaultJudgeBase(judgeProv)
+            if (!prefs.saveModelSnapshot(updated)) {
+                Toast.makeText(this, "模型关联保存失败", Toast.LENGTH_LONG).show()
+                return@primaryBtn
             }
-            prefs.judgeKey = judgeKeyEdit.text.toString()
-            prefs.judgeModel = when {
-                judgeModelTyped.isNotBlank() -> judgeModelTyped
-                judgeProv == Prefs.PROVIDER_CUSTOM -> ""
-                else -> defaultJudgeModel(judgeProv)
-            }
-
-            prefs.replyBaseUrl = replyBaseEdit.text.toString().trim().ifBlank { Prefs.DEFAULT_REPLY_BASE }
-            prefs.replyKey = replyKeyEdit.text.toString()
-            prefs.replyModel = replyModelEdit.text.toString().trim().ifBlank { Prefs.DEFAULT_REPLY_MODEL }
-
-            prefs.visionBaseUrl = visionBaseEdit.text.toString().trim()
-            prefs.visionKey = visionKeyEdit.text.toString()
-            prefs.visionModel = visionModelEdit.text.toString().trim().ifBlank { Prefs.DEFAULT_VISION_MODEL }
+            snapshot = updated
 
             prefs.relationship = relEdit.text.toString()   // blank stays blank, on purpose
             prefs.whitelist = wlEdit.text.toString().split("\n")
@@ -525,56 +349,138 @@ class SettingsActivity : AppCompatActivity() {
         setContentView(scroll)
     }
 
-    // Held as fields because several test buttons read each other's key box.
-    private lateinit var judgeKeyEdit: EditText
-    private lateinit var replyKeyEdit: EditText
-    private lateinit var replyBaseInput: EditText
-    private lateinit var visionKeyEdit: EditText
-
-    private fun providerOf(idx: Int) = when (idx) {
-        1 -> Prefs.PROVIDER_TYPESAFE
-        2 -> Prefs.PROVIDER_CUSTOM
-        else -> Prefs.PROVIDER_OPENROUTER
+    override fun onResume() {
+        super.onResume()
+        if (!awaitingCatalog) return
+        awaitingCatalog = false
+        snapshot = prefs.modelSnapshot()
+        clampModelReferences()
     }
 
-    /**
-     * The provider actually implied by what is in the address box. A preset host
-     * carries its own path (`/alpha/decisions`, `/v1/systemone`), so leaving that
-     * host in the box while the pill says something else would POST the wrong
-     * path — or, for custom, the bare API root.
-     */
-    private fun resolveJudgeProvider(idx: Int, base: String): String =
-        when (base.trim().trimEnd('/')) {
-            Prefs.DEFAULT_JUDGE_BASE_OPENROUTER -> Prefs.PROVIDER_OPENROUTER
-            Prefs.DEFAULT_JUDGE_BASE_TYPESAFE -> Prefs.PROVIDER_TYPESAFE
-            else -> providerOf(idx)
+    private fun modelValue() = text("", 13f, ink).apply {
+        background = round(dp(8), Color.parseColor("#F3F4F6"))
+        setPadding(dp(10), dp(10), dp(10), dp(10))
+    }
+
+    private fun clampModelReferences() {
+        if (snapshot.model(judgeRef) == null) judgeRef = ""
+        if (snapshot.model(replyRef) == null) replyRef = ""
+        if (snapshot.model(visionRef) == null) visionRef = ""
+        if (snapshot.model(openRef) == null) openRef = ""
+        if (snapshot.model(endRef) == null) endRef = ""
+        if (snapshot.model(consultRef) == null) consultRef = ""
+        refreshModelLabels()
+    }
+
+    private fun refreshModelLabels() {
+        if (!::judgeValue.isInitialized) return
+        judgeValue.text = modelLabel(judgeRef, "未选择")
+        replyValue.text = modelLabel(replyRef, "未选择")
+        visionValue.text = modelLabel(visionRef, "不配置")
+        openValue.text = featureLabel(openRef)
+        endValue.text = featureLabel(endRef)
+        consultValue.text = featureLabel(consultRef)
+    }
+
+    private fun featureLabel(ref: String): String =
+        if (ref.isBlank()) "跟随全局回复模型：${modelLabel(replyRef, "尚未选择")}"
+        else "独立模型：${modelLabel(ref, "引用失效")}"
+
+    private fun modelLabel(ref: String, fallback: String): String {
+        if (ref.isBlank()) return fallback
+        val route = snapshot.resolve(ref) ?: return "引用失效，请重新选择"
+        return "${route.serviceName} / ${route.modelName} · ${route.modelId}"
+    }
+
+    private fun pickModel(title: String, protocol: ModelProtocol?, visionOnly: Boolean,
+                          allowNone: Boolean, currentRef: String, onPick: (String) -> Unit) {
+        snapshot = prefs.modelSnapshot()
+        clampModelReferences()
+        val options = snapshot.modelOptions(protocol, visionOnly)
+        val labels = ArrayList<String>()
+        val values = ArrayList<String>()
+        if (allowNone) {
+            labels.add("不选择")
+            values.add("")
         }
-
-    /** The full endpoint a preset host would have been expanded to. */
-    private fun expandJudgeUrl(base: String): String = when (base.trim().trimEnd('/')) {
-        Prefs.DEFAULT_JUDGE_BASE_OPENROUTER -> Prefs.DEFAULT_JUDGE_BASE_OPENROUTER + "/alpha/decisions"
-        Prefs.DEFAULT_JUDGE_BASE_TYPESAFE -> Prefs.DEFAULT_JUDGE_BASE_TYPESAFE + "/v1/systemone"
-        else -> base.trim()
+        options.forEach { model ->
+            labels.add("${snapshot.service(model.serviceId)?.name.orEmpty()} / ${model.label}（${model.modelId}）")
+            values.add(model.id)
+        }
+        val initial = values.indexOf(currentRef).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setSingleChoiceItems(labels.toTypedArray(), initial) { dialog, which ->
+                onPick(values[which])
+                dialog.dismiss()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
-    private fun defaultJudgeBase(provider: String): String =
-        if (provider == Prefs.PROVIDER_TYPESAFE) Prefs.DEFAULT_JUDGE_BASE_TYPESAFE
-        else Prefs.DEFAULT_JUDGE_BASE_OPENROUTER
+    private fun testPrefs(bindings: InterfaceBindings, overrides: FeatureModelOverrides): Prefs {
+        val test = snapshot.copy(bindings = bindings, overrides = overrides)
+        val sp = getSharedPreferences(SCRATCH_MODEL_TEST, MODE_PRIVATE)
+        sp.edit().clear().commit()
+        check(ModelConfigStore(sp).save(test)) { "测试配置无效" }
+        return Prefs(this, SCRATCH_MODEL_TEST)
+    }
 
-    private fun defaultJudgeModel(provider: String): String =
-        if (provider == Prefs.PROVIDER_TYPESAFE) Prefs.DEFAULT_JUDGE_MODEL_TYPESAFE
-        else Prefs.DEFAULT_JUDGE_MODEL_OPENROUTER
+    private fun testJudge(result: TextView) {
+        if (judgeRef.isBlank()) { result.text = "请先选择判断模型"; return }
+        val route = snapshot.resolve(judgeRef) ?: run { result.text = "模型引用失效"; return }
+        val probe = runCatching { testPrefs(InterfaceBindings(judgeRef), FeatureModelOverrides()) }
+            .getOrElse { result.text = it.message ?: "测试配置无效"; return }
+        result.text = "测试中…"
+        worker.execute {
+            val start = System.currentTimeMillis()
+            val demo = ChatSnapshot("连通测试", listOf(Msg("other", "在吗？"), Msg("me", "在")))
+            val outcome = runCatching {
+                if (route.protocol == ModelProtocol.JEV) JudgeClient(probe).judge(demo, prefs.relationship)
+                else StrategyClient(probe, applicationContext).judge(demo, prefs.relationship)
+            }
+            val ms = System.currentTimeMillis() - start
+            main.post {
+                outcome.onSuccess { analysis ->
+                    result.text = analysis.error?.let { "失败（${ms}ms）：$it" }
+                        ?: "成功 ${ms}ms · 策略=${analysis.strategy ?: analysis.bestAction?.choice ?: "?"}"
+                }.onFailure { result.text = "失败（${ms}ms）：${it.message ?: "请求失败"}" }
+            }
+        }
+    }
 
-    /**
-     * A throwaway [Prefs] view carrying exactly what is in the boxes right now,
-     * so a test button probes the typed values rather than the saved ones. Each
-     * button gets its OWN scratch file — they used to share one and clear it out
-     * from under each other when two tests overlapped. The real config is never
-     * touched either way.
-     */
-    private fun draftPrefs(scratchName: String, fill: Prefs.() -> Unit): Prefs {
-        getSharedPreferences(scratchName, MODE_PRIVATE).edit().clear().commit()
-        return Prefs(this, scratchName).apply(fill)
+    private fun testReply(result: TextView) {
+        if (replyRef.isBlank()) { result.text = "请先选择回复模型"; return }
+        val probe = runCatching { testPrefs(InterfaceBindings(replyModelId = replyRef), FeatureModelOverrides()) }
+            .getOrElse { result.text = it.message ?: "测试配置无效"; return }
+        result.text = "测试中…"
+        worker.execute {
+            val start = System.currentTimeMillis()
+            val outcome = runCatching { ReplyClient(probe).ping() }
+            val ms = System.currentTimeMillis() - start
+            main.post {
+                outcome.onSuccess { result.text = "成功 ${ms}ms · 返回：${it.replace("\n", " ").take(60)}" }
+                    .onFailure { result.text = "失败（${ms}ms）：${it.message ?: "请求失败"}" }
+            }
+        }
+    }
+
+    private fun testVision(result: TextView) {
+        if (visionRef.isBlank()) { result.text = "请先选择已标记支持图片的视觉模型"; return }
+        val probe = runCatching { testPrefs(InterfaceBindings(visionModelId = visionRef), FeatureModelOverrides()) }
+            .getOrElse { result.text = it.message ?: "测试配置无效"; return }
+        result.text = "测试中…"
+        worker.execute {
+            val start = System.currentTimeMillis()
+            val outcome = runCatching {
+                VisionClient(probe).ask(whitePixelJpegB64(), "这张图是什么颜色？只回答颜色。")
+            }
+            val ms = System.currentTimeMillis() - start
+            main.post {
+                outcome.onSuccess { result.text = "成功 ${ms}ms · 返回：${it.replace("\n", " ").take(60)}" }
+                    .onFailure { result.text = "失败（${ms}ms）：${it.message ?: "请求失败"}" }
+            }
+        }
     }
 
     /** Opens an external link; swallows the failure with a toast rather than crashing. */
@@ -602,9 +508,6 @@ class SettingsActivity : AppCompatActivity() {
         bmp.eraseColor(Color.WHITE)
         return VisionClient.encodeJpeg(bmp)
     }
-
-    private fun pct(d: Double?): String =
-        if (d == null) "?" else "${(d * 100).roundToInt()}%"
 
     /** Horizontal selectable pills; calls [onPick] with the chosen index. */
     private fun pills(options: List<String>, initial: Int, onPick: (Int) -> Unit): View {
@@ -728,13 +631,8 @@ class SettingsActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "JEVASSIST"
 
-        private const val GUARD_NO_VISION =
-            "请填写图片识别接口地址"
-
-        /** One scratch prefs file per test button; never the real config. */
-        private const val SCRATCH_JUDGE = "jev_probe_scratch_judge"
-        private const val SCRATCH_REPLY = "jev_probe_scratch_reply"
-        private const val SCRATCH_VISION = "jev_probe_scratch_vision"
+        /** Throwaway complete snapshot used by the three connectivity tests. */
+        private const val SCRATCH_MODEL_TEST = "jev_probe_scratch_model"
 
         private const val PRIVACY_URL = "https://github.com/shengjidaguai-china/goutoujunshi-jev-chat/blob/main/PRIVACY.md"
         private const val REPO_URL = "https://github.com/shengjidaguai-china/goutoujunshi-jev-chat"

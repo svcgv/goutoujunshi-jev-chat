@@ -15,7 +15,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.jev.probe.core.Prefs
 import kotlin.math.roundToInt
@@ -103,15 +102,11 @@ class MainActivity : AppCompatActivity() {
                 .putExtra(CoachActivity.EXTRA_TASK, "open")
                 .putExtra(CoachActivity.EXTRA_AUTO_START, true))
         })
-        container.addView(actionRow("结束聊天", "默认结束本轮；减少投入或结束关系需明确选择") {
-            val modes = arrayOf("结束本轮", "减少投入 / 交还主动权", "明确结束关系")
-            val wires = arrayOf("end_turn", "reduce_investment", "end_relationship")
-            AlertDialog.Builder(this).setTitle("选择收尾方式").setItems(modes) { _, which ->
-                startActivity(Intent(this, CoachActivity::class.java)
-                    .putExtra(CoachActivity.EXTRA_TASK, "end")
-                    .putExtra(CoachActivity.EXTRA_END_MODE, wires[which])
-                    .putExtra(CoachActivity.EXTRA_AUTO_START, true))
-            }.setNegativeButton("取消", null).show()
+        container.addView(actionRow("暂时离开会话", "自然暂停本轮聊天，不结束关系、不减损投入") {
+            startActivity(Intent(this, CoachActivity::class.java)
+                .putExtra(CoachActivity.EXTRA_TASK, "end")
+                .putExtra(CoachActivity.EXTRA_END_MODE, "temporary_leave")
+                .putExtra(CoachActivity.EXTRA_AUTO_START, true))
         })
         container.addView(actionRow("记忆与隐私", "精简记忆 · 咨询原文 · 撤销与删除") {
             startActivity(Intent(this, MemoryActivity::class.java))

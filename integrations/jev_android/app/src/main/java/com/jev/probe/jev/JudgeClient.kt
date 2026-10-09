@@ -12,8 +12,8 @@ import org.json.JSONObject
 
 /**
  * The Jev judgment route only: the 7 judgment questions in one call, and the
- * ranking question over already-drafted candidates. Reads judgeProvider /
- * judgeBaseUrl / judgeKey / judgeModel from [Prefs]; nothing generative here.
+ * ranking question over already-drafted candidates. Resolves the selected Jev
+ * model and its owning service from [Prefs]; nothing generative here.
  */
 class JudgeClient(private val prefs: Prefs) {
 
@@ -95,12 +95,18 @@ class JudgeClient(private val prefs: Prefs) {
     }
 
     private fun send(state: JSONObject, questions: JSONObject): JSONObject {
-        val url = prefs.judgeEndpoint()
+        val route = prefs.judgeRoute()
+            ?: throw IllegalStateException("请先选择 Jev 判断模型")
+        require(route.protocol == com.jev.probe.core.ModelProtocol.JEV) {
+            "当前判断模型不是 Jev 协议"
+        }
+        require(route.key.isNotBlank()) { "请先配置判断模型所在服务的密钥" }
         val body = JSONObject()
-            .put("model", prefs.judgeModel)
+            .put("model", route.modelId)
             .put("state", state)
             .put("questions", questions)
-        val resp = HttpJson.post(url, prefs.judgeKey, body, Route.JUDGE, HttpJson.headersFor(url))
+        val resp = HttpJson.post(route.endpoint, route.key, body, Route.JUDGE,
+            HttpJson.headersFor(route.endpoint))
         return resp.optJSONObject("answers") ?: JSONObject()
     }
 

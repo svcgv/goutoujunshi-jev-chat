@@ -3,6 +3,7 @@ package com.jev.probe.jev
 import android.graphics.Bitmap
 import android.util.Base64
 import com.jev.probe.core.Prefs
+import com.jev.probe.core.ModelProtocol
 import java.io.ByteArrayOutputStream
 import org.json.JSONArray
 import org.json.JSONObject
@@ -11,9 +12,9 @@ import org.json.JSONObject
  * The vision route: an OpenAI-compatible `/chat/completions` endpoint that
  * accepts `image_url` content parts. The screenshot pipeline uses it when cloud OCR is selected.
  *
- * Reads visionBaseUrl / visionKey / visionModel from [Prefs]. The base URL does
- * not inherit from the reply route; the user chooses the host that receives
- * the screenshot. Keys are reused only for the same API origin.
+ * Resolves the explicitly selected vision model from [Prefs]. The service and
+ * key do not inherit from the reply route; the user chooses the host that
+ * receives the screenshot.
  *
  * Wire format notes that cost real debugging time:
  * - JPEG, not PNG: a screenshot as PNG base64 is several times larger.
@@ -38,20 +39,26 @@ class VisionClient(private val prefs: Prefs) {
 
     /** Generic single-question call against the image (used by the settings test). */
     fun ask(imageBase64Jpeg: String, prompt: String): String {
-        val url = prefs.visionEndpoint()
+        val route = prefs.visionRoute()
+            ?: throw IllegalStateException("请先选择视觉模型")
+        require(route.protocol == ModelProtocol.CHAT) { "视觉模型必须使用聊天协议" }
+        require(route.vision) { "所选模型未标记为支持图片" }
+        require(route.key.isNotBlank()) { "请先配置视觉模型所在服务的密钥" }
+        val url = route.endpoint
         val image = JSONObject().put("type", "image_url")
             .put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$imageBase64Jpeg"))
         val text = JSONObject().put("type", "text").put("text", prompt)
         // DashScope requires image first; DeepSeek's documented format puts text first.
-        val content = if (prefs.visionBaseUrl.trim().trimEnd('/') == Prefs.DEEPSEEK_BASE)
+        val host = runCatching { java.net.URI(url).host.orEmpty() }.getOrDefault("")
+        val content = if (host == "api.deepseek.com")
             JSONArray().put(text).put(image) else JSONArray().put(image).put(text)
         val messages = JSONArray().put(
             JSONObject().put("role", "user").put("content", content))
         val body = JSONObject()
-            .put("model", prefs.visionModel)
+            .put("model", route.modelId)
             .put("messages", messages)
             .put("temperature", 0.0)
-        val resp = HttpJson.post(url, prefs.effectiveVisionKey(), body, Route.VISION, HttpJson.headersFor(url))
+        val resp = HttpJson.post(url, route.key, body, Route.VISION, HttpJson.headersFor(url))
         return resp.optJSONArray("choices")?.optJSONObject(0)
             ?.optJSONObject("message")?.optString("content") ?: ""
     }

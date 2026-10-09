@@ -1,157 +1,71 @@
 package com.jev.probe.core
 
 import android.content.Context
-import android.util.Log
+import com.jev.probe.coach.CoachTask
 
 /**
- * App-private config store. Holds the three API routes (judge / reply / vision),
- * the relationship description used in Jev's state, the conversation whitelist,
- * plus the context (D stage) and OCR (B stage) switches.
- *
- * Key handling: stored in app-private SharedPreferences (not world-readable,
- * never logged, never in code/git). Only key *lengths* are ever logged.
+ * App-private config store. Model routes live in one versioned snapshot managed
+ * by [ModelConfigStore]; the old route keys are read only once for migration.
+ * Chat text, keys and other private data are never logged.
  */
 class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
 
     private val sp = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+    private val modelStore = ModelConfigStore(sp)
 
-    /**
-     * Only the real config migrates — and only the real config logs it. The
-     * throwaway instances behind the settings test buttons and the KB self-check
-     * have nothing to carry over, and used to print one migration line per tap.
-     */
     init { if (prefsName == PREFS_MAIN) migrateIfNeeded() }
 
-    /**
-     * v1.2 -> v1.3: the single `openrouter_key` becomes the judge route's key.
-     * `reply_model` keeps its old storage key, so it carries over untouched.
-     */
+    /** v1.2 -> v1.3 and the single model snapshot migration. */
     private fun migrateIfNeeded() {
-        if (sp.getBoolean(K_MIGRATED_V13, false)) return   // runs exactly once
-        val legacy = sp.getString(K_LEGACY_KEY, "") ?: ""
-        val current = sp.getString(K_JUDGE_KEY, "") ?: ""
-        val e = sp.edit().putBoolean(K_MIGRATED_V13, true)
-        if (current.isBlank() && legacy.isNotBlank()) {
-            e.putString(K_JUDGE_KEY, legacy)
-            Log.i(TAG, "prefs migrated judgeKey.len=${legacy.length}")
-        } else {
-            Log.i(TAG, "prefs migrated judgeKey.len=${current.length} (no legacy key to copy)")
+        if (!sp.getBoolean(K_MIGRATED_V13, false)) {
+            val legacy = sp.getString(K_LEGACY_KEY, "").orEmpty()
+            val current = sp.getString(K_JUDGE_KEY, "").orEmpty()
+            val edit = sp.edit().putBoolean(K_MIGRATED_V13, true)
+            if (current.isBlank() && legacy.isNotBlank()) edit.putString(K_JUDGE_KEY, legacy)
+            edit.commit()
         }
-        e.apply()
+        if (sp.getBoolean(K_MIGRATED_CONFIG_V1, false)) return
+        val stored = modelStore.load()
+        if (!modelStore.hasStored() || (stored.services.isEmpty() && stored.models.isEmpty())) {
+            val legacy = readLegacy()
+            if (legacy.configured) {
+                val snapshot = ConfigMigration.migrate(legacy)
+                if (!modelStore.save(snapshot)) return
+            }
+        }
+        sp.edit().putBoolean(K_MIGRATED_CONFIG_V1, true).commit()
     }
 
-    // ---------------------------------------------------------------- judge
+    // ------------------------------------------------------------ model config
 
-    /** "openrouter" | "typesafe" | "custom". */
-    var judgeProvider: String
-        get() = sp.getString(K_JUDGE_PROVIDER, PROVIDER_OPENROUTER) ?: PROVIDER_OPENROUTER
-        set(v) = sp.edit().putString(K_JUDGE_PROVIDER, v.trim()).apply()
+    fun modelSnapshot(): ModelConfigSnapshot = modelStore.load()
 
-    /** Host root; the path is appended per provider (see [judgeEndpoint]). */
-    var judgeBaseUrl: String
-        get() = sp.getString(K_JUDGE_BASE, DEFAULT_JUDGE_BASE_OPENROUTER) ?: DEFAULT_JUDGE_BASE_OPENROUTER
-        set(v) = sp.edit().putString(K_JUDGE_BASE, v.trim()).apply()
+    fun saveModelSnapshot(snapshot: ModelConfigSnapshot): Boolean {
+        val saved = modelStore.save(snapshot)
+        if (saved) sp.edit().putBoolean(K_MIGRATED_CONFIG_V1, true).apply()
+        return saved
+    }
 
-    var judgeKey: String
-        get() = sp.getString(K_JUDGE_KEY, "") ?: ""
-        set(v) = sp.edit().putString(K_JUDGE_KEY, v.trim()).apply()
+    fun judgeRoute(): ResolvedRoute? = modelSnapshot().judgeRoute()
 
-    var judgeModel: String
-        get() = sp.getString(K_JUDGE_MODEL, DEFAULT_JUDGE_MODEL_OPENROUTER) ?: DEFAULT_JUDGE_MODEL_OPENROUTER
-        set(v) = sp.edit().putString(K_JUDGE_MODEL, v.trim()).apply()
+    fun replyRoute(): ResolvedRoute? = modelSnapshot().replyRoute()
 
-    /** Jev, official DeepSeek, or an OpenAI-compatible proxy. */
-    var strategyProvider: String
-        get() {
-            val default = if (sp.contains(K_JUDGE_PROVIDER) || sp.contains(K_JUDGE_KEY)) "jev"
-                          else STRATEGY_COMPATIBLE
-            return sp.getString(K_STRATEGY_PROVIDER, default) ?: default
-        }
-        set(v) = sp.edit().putString(K_STRATEGY_PROVIDER, if (v in listOf("deepseek", STRATEGY_COMPATIBLE)) v else "jev").apply()
+    fun visionRoute(): ResolvedRoute? = modelSnapshot().visionRoute()
 
-    var strategyModel: String
-        get() = sp.getString(K_STRATEGY_MODEL, if (strategyProvider == STRATEGY_COMPATIBLE) "" else DEEPSEEK_MODEL) ?: ""
-        set(v) = sp.edit().putString(K_STRATEGY_MODEL, v.trim()).apply()
+    fun featureRoute(task: CoachTask): ResolvedRoute? = modelSnapshot().featureRoute(task)
 
-    var strategyKey: String
-        get() = sp.getString(K_STRATEGY_KEY, "") ?: ""
-        set(v) = sp.edit().putString(K_STRATEGY_KEY, v.trim()).apply()
+    /** Readiness gate: a complete judge route is required before analysis. */
+    fun hasKey(): Boolean = judgeRoute()?.ready == true
 
-    var strategyBaseUrl: String
-        get() = sp.getString(K_STRATEGY_BASE, DEFAULT_PROXY_BASE) ?: DEFAULT_PROXY_BASE
-        set(v) = sp.edit().putString(K_STRATEGY_BASE, v.trim()).apply()
-
-    fun strategyEndpoint(): String = StrategyRoute.endpoint(
-        if (strategyProvider == "deepseek") DEEPSEEK_BASE else strategyBaseUrl)
-
-    fun usesChatStrategy(): Boolean = strategyProvider != "jev"
-
-    fun effectiveStrategyKey(): String = RouteKeys.strategy(strategyKey, replyKey,
-        replyEndpoint(), strategyEndpoint())
-
-    /** Back-compat alias so older call sites keep compiling. */
-    var openRouterKey: String
-        get() = judgeKey
-        set(v) { judgeKey = v }
-
-    // ---------------------------------------------------------------- reply
-
-    /** OpenAI-compatible base, up to and including `/v1`. */
-    var replyBaseUrl: String
-        get() = sp.getString(K_REPLY_BASE, DEFAULT_REPLY_BASE) ?: DEFAULT_REPLY_BASE
-        set(v) = sp.edit().putString(K_REPLY_BASE, v.trim()).apply()
-
-    /** Blank may reuse the judge key only for the same API origin. */
-    var replyKey: String
-        get() = sp.getString(K_REPLY_KEY, "") ?: ""
-        set(v) = sp.edit().putString(K_REPLY_KEY, v.trim()).apply()
-
-    /** Generative model for drafting the 3 candidate replies. */
-    var replyModel: String
-        get() = sp.getString(K_REPLY_MODEL, DEFAULT_REPLY_MODEL) ?: DEFAULT_REPLY_MODEL
-        set(v) = sp.edit().putString(K_REPLY_MODEL, v.trim()).apply()
-
-    // --------------------------------------------------------------- vision
-
-    /**
-     * Blank = the OpenRouter vision default. Deliberately does NOT follow
-     * [replyBaseUrl]: a reply host like DeepSeek has no vision endpoint, so
-     * inheriting it would silently break OCR.
-     */
-    var visionBaseUrl: String
-        get() = sp.getString(K_VISION_BASE, DEFAULT_VISION_BASE) ?: DEFAULT_VISION_BASE
-        set(v) = sp.edit().putString(K_VISION_BASE, v.trim()).apply()
-
-    /** Blank may reuse another route's key only for the same API origin. */
-    var visionKey: String
-        get() = sp.getString(K_VISION_KEY, "") ?: ""
-        set(v) = sp.edit().putString(K_VISION_KEY, v.trim()).apply()
-
-    var visionModel: String
-        get() = sp.getString(K_VISION_MODEL, DEFAULT_VISION_MODEL) ?: DEFAULT_VISION_MODEL
-        set(v) = sp.edit().putString(K_VISION_MODEL, v.trim()).apply()
+    fun hasVision(): Boolean = visionRoute()?.ready == true
 
     // -------------------------------------------------------- context (D)
 
-    /**
-     * Record per-contact history and inject it into analysis. Default OFF:
-     * nothing about the user's chats is written to disk unless they opt in
-     * (v1.3 revision, D stage).
-     */
     var contextEnabled: Boolean
         get() = sp.getBoolean(K_CTX_ENABLED, false)
         set(v) = sp.edit().putBoolean(K_CTX_ENABLED, v).apply()
 
-    /**
-     * Inject short excerpts from the bundled 狗头军师 knowledge base into the
-     * strategy and draft prompts. On-device only; default ON because it ships
-     * with the app and materially improves judgment quality.
-     */
-    /**
-     * Title areas the user selected by dragging over a real screenshot, keyed by
-     * chat app package so WeChat and QQ can differ. Stored as fractions of the
-     * image. An app with no entry is simply not read from pixels.
-     */
+    /** Title areas selected by dragging over a screenshot, keyed by package. */
     var titleRegions: String
         get() = sp.getString(K_TITLE_REGION, "") ?: ""
         set(v) = sp.edit().putString(K_TITLE_REGION, v.trim()).apply()
@@ -160,17 +74,10 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
         get() = sp.getBoolean(K_SKILL_KB, true)
         set(v) = sp.edit().putBoolean(K_SKILL_KB, v).apply()
 
-    /** How many recent history entries to inject. */
     var contextHistoryCount: Int
         get() = sp.getInt(K_CTX_COUNT, 30)
         set(v) = sp.edit().putInt(K_CTX_COUNT, v).apply()
 
-    /**
-     * Planning budget for one model request, in tokens. Covers judgment,
-     * strategy and reply routes. A conservative 8192 default is used when the
-     * user has not set a real window; it is a planning number, not a claim about
-     * what the configured proxy actually supports.
-     */
     var modelContextWindow: Int
         get() = sp.getInt(K_CTX_WINDOW, 8192)
         set(v) = sp.edit().putInt(K_CTX_WINDOW, v.coerceIn(1024, 1_000_000)).apply()
@@ -178,7 +85,6 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
     internal fun tokenBudget(): com.jev.probe.jev.TokenBudget =
         com.jev.probe.jev.TokenBudget(contextWindow = modelContextWindow.coerceIn(1024, 1_000_000))
 
-    /** Auto-summarize a contact once enough history accumulates. */
     var autoSummary: Boolean
         get() = sp.getBoolean(K_AUTO_SUMMARY, true)
         set(v) = sp.edit().putBoolean(K_AUTO_SUMMARY, v).apply()
@@ -190,34 +96,28 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
         get() = sp.getString(K_OCR_ENGINE, OCR_MLKIT) ?: OCR_MLKIT
         set(v) = sp.edit().putString(K_OCR_ENGINE, v.trim()).apply()
 
-    /** Run generic OCR capture on apps with no dedicated adapter. */
     var ocrForUnknownApps: Boolean
         get() = sp.getBoolean(K_OCR_UNKNOWN, true)
         set(v) = sp.edit().putBoolean(K_OCR_UNKNOWN, v).apply()
 
-    /** Fall back to OCR when an adapted app's node tree comes back empty. */
     var ocrFallback: Boolean
         get() = sp.getBoolean(K_OCR_FALLBACK, true)
         set(v) = sp.edit().putBoolean(K_OCR_FALLBACK, v).apply()
 
-    /** Auto-analyze in OCR mode (default off: OCR costs a screenshot each time). */
     var ocrAutoAnalyze: Boolean
         get() = sp.getBoolean(K_OCR_AUTO, false)
         set(v) = sp.edit().putBoolean(K_OCR_AUTO, v).apply()
 
     // ------------------------------------------------------------- existing
 
-    /** Free-text describing who the other person is; goes into Jev's state. */
     var relationship: String
         get() = sp.getString(K_REL, DEFAULT_REL) ?: DEFAULT_REL
         set(v) = sp.edit().putString(K_REL, v).apply()
 
-    /** Master on/off for showing the overlay + running analysis. */
     var enabled: Boolean
         get() = sp.getBoolean(K_ENABLED, false)
         set(v) = sp.edit().putBoolean(K_ENABLED, v).apply()
 
-    /** Retain this listener until the service is destroyed, even with no window events. */
     fun observeEnabled(onChanged: (Boolean) -> Unit): () -> Unit {
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == K_ENABLED) onChanged(enabled)
@@ -226,87 +126,69 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
         return { sp.unregisterOnSharedPreferenceChangeListener(listener) }
     }
 
-    /**
-     * Conversation whitelist: titles the assistant is allowed to act on. Empty
-     * set means "all conversations". Stored as a plain string set.
-     */
     var whitelist: Set<String>
-        get() = sp.getStringSet(K_WHITELIST, emptySet()) ?: emptySet()
-        set(v) = sp.edit().putStringSet(K_WHITELIST, v).apply()
+        get() = sp.getStringSet(K_WHITELIST, emptySet())?.toSet() ?: emptySet()
+        set(v) = sp.edit().putStringSet(K_WHITELIST, v.filter { it.isNotBlank() }.toSet()).apply()
 
-    /** Overlay panel opacity, 60..100 (%). Lower lets the chat show through. */
     var overlayOpacity: Int
-        get() = sp.getInt(K_OPACITY, 92).coerceIn(60, 100)
+        get() = sp.getInt(K_OPACITY, 92)
         set(v) = sp.edit().putInt(K_OPACITY, v.coerceIn(60, 100)).apply()
 
-    /** Remembered vertical position of the bubble (px); -1 = default. */
     var bubbleY: Int
         get() = sp.getInt(K_BUBBLE_Y, -1)
         set(v) = sp.edit().putInt(K_BUBBLE_Y, v).apply()
 
-    /** Remembered horizontal position of the bubble (px); -1 = default. */
     var bubbleX: Int
         get() = sp.getInt(K_BUBBLE_X, -1)
         set(v) = sp.edit().putInt(K_BUBBLE_X, v).apply()
 
-    /** Auto-analyze on every incoming message; if false, user taps to analyze. */
     var autoAnalyze: Boolean
         get() = sp.getBoolean(K_AUTO, false)
         set(v) = sp.edit().putBoolean(K_AUTO, v).apply()
 
-    // ------------------------------------------------------------- helpers
-
-    /** Never send a TypeSafe/OpenRouter key to a different reply host. */
-    fun effectiveReplyKey(): String = RouteKeys.reply(replyKey, judgeKey, replyEndpoint(), judgeEndpoint())
-
-    /** Never send a reply or judge key to a different vision host. */
-    fun effectiveVisionKey(): String = RouteKeys.vision(visionKey, replyKey, judgeKey,
-        visionEndpoint(), replyEndpoint(), judgeEndpoint()).ifBlank {
-        if (usesChatStrategy()) try {
-            RouteKeys.strategy("", strategyKey, strategyEndpoint(), visionEndpoint())
-        } catch (_: Exception) { "" } else ""
-    }
-
-    /** Full POST URL for the Jev decisions call, per provider. */
-    fun judgeEndpoint(): String {
-        val base = judgeBaseUrl.trim().trimEnd('/')
-        return when (judgeProvider) {
-            PROVIDER_TYPESAFE -> "$base/v1/systemone"
-            PROVIDER_CUSTOM -> judgeBaseUrl.trim()   // user supplies the full URL
-            else -> "$base/alpha/decisions"
-        }
-    }
-
-    /** Full POST URL for the OpenAI-compatible chat completions call. */
-    fun replyEndpoint(): String = "${replyBaseUrl.trim().trimEnd('/')}/chat/completions"
-
-    /** Same shape as [replyEndpoint]; blank falls back to the OpenRouter default. */
-    fun visionEndpoint(): String {
-        val base = visionBaseUrl.trim().ifBlank { DEFAULT_VISION_BASE }
-        return "${base.trimEnd('/')}/chat/completions"
-    }
-
     fun isAllowed(title: String?): Boolean {
-        val wl = whitelist
-        if (wl.isEmpty()) return true
+        val list = whitelist
+        if (list.isEmpty()) return true
         if (title == null) return false
-        return wl.any { title.contains(it) }
+        return list.any { title.contains(it) }
     }
 
-    /** Readiness gate: the judge route is the one that must be configured. */
-    fun hasKey(): Boolean = try {
-        if (usesChatStrategy()) strategyModel.isNotBlank() && effectiveStrategyKey().isNotBlank()
-        else judgeKey.isNotBlank()
-    } catch (_: Exception) { false }
+    private fun readLegacy(): LegacyConfig {
+        fun has(vararg keys: String) = keys.any { sp.contains(it) }
+        val strategyDefault = if (sp.contains(K_JUDGE_PROVIDER) || sp.contains(K_JUDGE_KEY)) "jev"
+            else STRATEGY_COMPATIBLE
+        val strategyProvider = sp.getString(K_STRATEGY_PROVIDER, strategyDefault) ?: strategyDefault
+        return LegacyConfig(
+            hasJudge = has(K_LEGACY_KEY, K_JUDGE_PROVIDER, K_JUDGE_BASE, K_JUDGE_KEY, K_JUDGE_MODEL),
+            judgeProvider = sp.getString(K_JUDGE_PROVIDER, PROVIDER_OPENROUTER) ?: PROVIDER_OPENROUTER,
+            judgeBaseUrl = sp.getString(K_JUDGE_BASE, DEFAULT_JUDGE_BASE_OPENROUTER)
+                ?: DEFAULT_JUDGE_BASE_OPENROUTER,
+            judgeKey = sp.getString(K_JUDGE_KEY, "") ?: "",
+            judgeModel = sp.getString(K_JUDGE_MODEL, DEFAULT_JUDGE_MODEL_OPENROUTER)
+                ?: DEFAULT_JUDGE_MODEL_OPENROUTER,
+            hasStrategy = has(K_STRATEGY_PROVIDER, K_STRATEGY_BASE, K_STRATEGY_KEY, K_STRATEGY_MODEL),
+            strategyProvider = strategyProvider,
+            strategyBaseUrl = sp.getString(K_STRATEGY_BASE, DEFAULT_PROXY_BASE) ?: DEFAULT_PROXY_BASE,
+            strategyKey = sp.getString(K_STRATEGY_KEY, "") ?: "",
+            strategyModel = sp.getString(K_STRATEGY_MODEL,
+                if (strategyProvider == STRATEGY_COMPATIBLE) "" else DEEPSEEK_MODEL) ?: "",
+            hasReply = has(K_REPLY_BASE, K_REPLY_KEY, K_REPLY_MODEL),
+            replyBaseUrl = sp.getString(K_REPLY_BASE, DEFAULT_REPLY_BASE) ?: DEFAULT_REPLY_BASE,
+            replyKey = sp.getString(K_REPLY_KEY, "") ?: "",
+            replyModel = sp.getString(K_REPLY_MODEL, DEFAULT_REPLY_MODEL) ?: DEFAULT_REPLY_MODEL,
+            hasVision = has(K_VISION_BASE, K_VISION_KEY, K_VISION_MODEL),
+            visionBaseUrl = sp.getString(K_VISION_BASE, DEFAULT_VISION_BASE) ?: DEFAULT_VISION_BASE,
+            visionKey = sp.getString(K_VISION_KEY, "") ?: "",
+            visionModel = sp.getString(K_VISION_MODEL, DEFAULT_VISION_MODEL) ?: DEFAULT_VISION_MODEL
+        )
+    }
 
     companion object {
-        private const val TAG = "JEVASSIST"
-
-        /** The one real config file. Anything else is a scratch instance. */
         const val PREFS_MAIN = "jev_assistant"
 
         private const val K_LEGACY_KEY = "openrouter_key"
         private const val K_MIGRATED_V13 = "prefs_migrated_v13"
+        private const val K_MIGRATED_CONFIG_V1 = "prefs_migrated_model_config_v1"
         private const val K_JUDGE_PROVIDER = "judge_provider"
         private const val K_JUDGE_BASE = "judge_base_url"
         private const val K_JUDGE_KEY = "judge_key"
@@ -349,13 +231,11 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
         const val OCR_MLKIT = "mlkit"
         const val OCR_VISION = "vision"
 
-        // Judge route presets.
         const val DEFAULT_JUDGE_BASE_OPENROUTER = "https://openrouter.ai/api"
         const val DEFAULT_JUDGE_MODEL_OPENROUTER = "typesafe/jev-1.13"
         const val DEFAULT_JUDGE_BASE_TYPESAFE = "https://api.typesafe.ai"
         const val DEFAULT_JUDGE_MODEL_TYPESAFE = "jev-latest"
 
-        // Reply route presets (OpenAI-compatible chat completions).
         const val DEFAULT_REPLY_BASE = "https://openrouter.ai/api/v1"
         const val DEFAULT_REPLY_MODEL = "deepseek/deepseek-chat-v3.1"
         const val DEEPSEEK_BASE = "https://api.deepseek.com/v1"
@@ -363,7 +243,6 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
         const val DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
         const val DASHSCOPE_MODEL = "qwen-plus"
 
-        // Vision route preset (OpenRouter region-available; user may change).
         const val DEFAULT_VISION_BASE = "https://openrouter.ai/api/v1"
         const val DEFAULT_VISION_MODEL = "qwen/qwen2.5-vl-72b-instruct"
         const val DASHSCOPE_VISION_MODEL = "qwen-vl-max"

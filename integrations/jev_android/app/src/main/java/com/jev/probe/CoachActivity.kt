@@ -59,7 +59,7 @@ class CoachActivity : AppCompatActivity() {
     private var activeToken: WorkToken? = null
 
     private var task = CoachTask.CONSULT
-    private var endMode = EndChatMode.END_TURN
+    private var endMode = EndChatMode.TEMPORARY_LEAVE
     private var contactId: String? = null
     private var title = "军师咨询"
     private var relationship = ""
@@ -177,18 +177,14 @@ class CoachActivity : AppCompatActivity() {
     private fun defaultGoal(): String = when (task) {
         CoachTask.OPEN -> "帮我主动发起一次自然、低压力的聊天。"
         CoachTask.REPLY -> "帮我回复当前对话。"
-        CoachTask.END -> when (endMode) {
-            EndChatMode.END_TURN -> "帮我把本轮聊天自然收尾，不制造借口。"
-            EndChatMode.REDUCE_INVESTMENT -> "帮我减少单边投入、交还主动权，但不羞辱或操控对方。"
-            EndChatMode.END_RELATIONSHIP -> "帮我清楚、尊重地表达结束关系，并给出安全边界。"
-        }
+        CoachTask.END -> "帮我自然地说一句暂时离开会话，不编造具体借口，也不暗示结束关系。"
         CoachTask.CONSULT -> "帮我看清当前局面，并给我一个现在能做的小动作。"
     }
 
     private fun taskLabel(): String = when (task) {
         CoachTask.OPEN -> "发起聊天"
         CoachTask.REPLY -> "帮我回复"
-        CoachTask.END -> "结束聊天 · ${endMode.label}"
+        CoachTask.END -> "暂时离开会话"
         CoachTask.CONSULT -> "完整咨询"
     }
 

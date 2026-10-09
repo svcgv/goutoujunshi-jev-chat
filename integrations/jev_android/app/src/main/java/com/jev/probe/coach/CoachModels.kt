@@ -15,15 +15,13 @@ enum class CoachTask(val wire: String) {
     }
 }
 
-/** End-chat is deliberately split so a daily sign-off never becomes a relationship exit. */
+/** A single temporary-leave action. Legacy relationship-exit values collapse to it. */
 enum class EndChatMode(val wire: String, val label: String) {
-    END_TURN("end_turn", "结束本轮"),
-    REDUCE_INVESTMENT("reduce_investment", "减少投入 / 交还主动权"),
-    END_RELATIONSHIP("end_relationship", "明确结束关系");
+    TEMPORARY_LEAVE("temporary_leave", "暂时离开会话");
 
     companion object {
         fun fromWire(value: String?): EndChatMode =
-            entries.firstOrNull { it.wire == value } ?: END_TURN
+            entries.firstOrNull { it.wire == value } ?: TEMPORARY_LEAVE
     }
 }
 
@@ -35,7 +33,7 @@ data class CoachRequest(
     val snapshot: ChatSnapshot? = null,
     val userGoal: String = "",
     val turn: Int = 1,
-    val endMode: EndChatMode = EndChatMode.END_TURN,
+    val endMode: EndChatMode = EndChatMode.TEMPORARY_LEAVE,
     val background: String = "",
     val memoryContext: String = "",
     val conversation: List<CoachMessage> = emptyList()

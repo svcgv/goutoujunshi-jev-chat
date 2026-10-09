@@ -279,7 +279,7 @@ class KnowledgeActivity : AppCompatActivity() {
         }
         val relEdit = edit(existing?.relationship ?: "", "例如：同事，带我做项目的组长")
         val stageEdit = edit(existing?.stage ?: "未填写", "初识／了解中／暧昧／约会中／伴侣／关系结束")
-        val goalEdit = edit(existing?.goal ?: "自然接话", "自然接话／主动邀约／澄清关系／修复冲突／减少投入／结束联系")
+        val goalEdit = edit(existing?.goal ?: "自然接话", "自然接话／主动邀约／澄清关系／修复冲突／暂时离开会话")
         val notesEdit = edit(existing?.notes ?: "", "关于这个人要记住的事").apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             minLines = 3; gravity = Gravity.TOP

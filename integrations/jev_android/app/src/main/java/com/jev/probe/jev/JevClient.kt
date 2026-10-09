@@ -3,6 +3,7 @@ package com.jev.probe.jev
 import com.jev.probe.core.Analysis
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.Prefs
+import com.jev.probe.core.ModelProtocol
 import com.jev.probe.core.RankedReply
 import com.jev.probe.core.GoutouGuidance
 import com.jev.probe.core.kb.ChatContext
@@ -16,14 +17,17 @@ import com.jev.probe.coach.CoachTask
  * Construct with [Prefs] — every route reads its own address / key / model from
  * there, so switching providers in settings takes effect on the next call.
  */
-class JevClient(private val prefs: Prefs, context: android.content.Context? = null) {
+class JevClient(private val prefs: Prefs, private val context: android.content.Context? = null) {
 
     private val judgeClient = JudgeClient(prefs)
     private val replyClient = ReplyClient(prefs, context)
     private val strategyClient = StrategyClient(prefs, context)
 
-    fun coach(request: CoachRequest, decision: CoachDecision, ctx: ChatContext? = null): CoachResponse =
-        replyClient.coach(request, ctx, decision)
+    fun coach(request: CoachRequest, decision: CoachDecision, ctx: ChatContext? = null): CoachResponse {
+        val featureRoute = prefs.featureRoute(request.task)
+            ?: throw IllegalArgumentException("请先选择回复模型")
+        return ReplyClient(prefs, context, featureRoute).coach(request, ctx, decision)
+    }
 
     fun details(snapshot: ChatSnapshot, relationship: String, judgment: Analysis, ctx: ChatContext? = null): String =
         replyClient.details(snapshot, relationship, judgment, ctx)
@@ -36,7 +40,7 @@ class JevClient(private val prefs: Prefs, context: android.content.Context? = nu
 
     fun rerank(snapshot: ChatSnapshot, relationship: String, judgment: Analysis,
                candidates: List<String>, ctx: ChatContext? = null): List<RankedReply> = try {
-        if (prefs.usesChatStrategy())
+        if (usesChatJudge())
             strategyClient.rank(snapshot, relationship, judgment.strategy ?: "澄清", candidates, ctx)
         else judgeClient.rank(snapshot, relationship, candidates, ctx)
     } catch (_: Exception) { candidates.map { RankedReply(it, 0.0) } }
@@ -46,7 +50,7 @@ class JevClient(private val prefs: Prefs, context: android.content.Context? = nu
               coachTask: CoachTask = CoachTask.REPLY, userGoal: String = "",
               endMode: String = "", memoryContext: String = ""): Analysis =
         if (GoutouGuidance.explicitBoundary(snapshot)) GoutouGuidance.boundaryAnalysis()
-        else if (prefs.usesChatStrategy())
+        else if (usesChatJudge())
             strategyClient.judge(snapshot, relationship, ctx, coachTask, userGoal, endMode, memoryContext)
         else judgeClient.judge(snapshot, relationship, ctx)
 
@@ -62,7 +66,7 @@ class JevClient(private val prefs: Prefs, context: android.content.Context? = nu
         // A ranking outage must not discard drafts that were already generated.
         // Zero means "ranking pending" in the overlay, not a 0% success chance.
         return try {
-            if (prefs.usesChatStrategy())
+            if (usesChatJudge())
                 strategyClient.rank(snapshot, relationship, judgment?.strategy ?: "澄清", candidates, ctx)
             else judgeClient.rank(snapshot, relationship, candidates, ctx)
         }
@@ -76,4 +80,6 @@ class JevClient(private val prefs: Prefs, context: android.content.Context? = nu
         val ranked = try { draftAndRank(snapshot, relationship, ctx, a) } catch (e: Exception) { emptyList() }
         return a.copy(rankedReplies = ranked)
     }
+
+    private fun usesChatJudge(): Boolean = prefs.judgeRoute()?.protocol == ModelProtocol.CHAT
 }

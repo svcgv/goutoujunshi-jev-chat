@@ -1530,7 +1530,7 @@ open class ChatCaptureService : AccessibilityService() {
         val crop = Bitmap.createBitmap(bmp, 0, top, bmp.width, bottom - top)
         runCatching { bmp.recycle() }
         val detachCrop = token.onCancel { runCatching { crop.recycle() } }
-        if (!VisionClient.supportsVision(prefs.visionBaseUrl) || prefs.effectiveVisionKey().isBlank()) {
+        if (!prefs.hasVision()) {
             runCatching { crop.recycle() }
             detachCrop()
             ocrBusy = false

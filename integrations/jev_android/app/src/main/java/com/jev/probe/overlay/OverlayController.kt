@@ -440,9 +440,7 @@ class OverlayController(private val ctx: Context) {
                 actionGroup(listOf(
                     "帮我回复" to { onManualAnalyze?.invoke() },
                     "发起聊天" to { onOpenChat?.invoke() },
-                    "结束本轮" to { onEndChat?.invoke("end_turn") },
-                    "减少投入" to { onEndChat?.invoke("reduce_investment") },
-                    "结束关系" to { onEndChat?.invoke("end_relationship") },
+                    "暂时离开会话" to { onEndChat?.invoke("temporary_leave") },
                     "问军师（连续咨询）" to { onConsult?.invoke() },
                     "绑定对象 / 记忆设置" to { onSaveContact?.invoke() },
                     "自动补录会话历史" to { onBackfill?.invoke() },
@@ -1068,9 +1066,7 @@ class OverlayController(private val ctx: Context) {
         }
         views.add(actionGroup(listOf(
             "发起聊天" to { onOpenChat?.invoke() },
-            "结束本轮" to { onEndChat?.invoke("end_turn") },
-            "减少投入 / 交还主动权" to { onEndChat?.invoke("reduce_investment") },
-            "明确结束关系" to { onEndChat?.invoke("end_relationship") },
+            "暂时离开会话" to { onEndChat?.invoke("temporary_leave") },
             "问军师（连续咨询）" to { onConsult?.invoke() })))
 
         setContent(views)

@@ -38,11 +38,7 @@ object SkillDigest {
 
     private fun requiredFiles(task: CoachTask, endMode: String): Set<String> = when (task) {
         CoachTask.OPEN -> setOf("reply_craft.md", "first_meeting.md")
-        CoachTask.END -> when (endMode) {
-            "reduce_investment" -> setOf("investment_imbalance.md", "reply_craft.md")
-            "end_relationship" -> setOf("investment_imbalance.md", "consent_boundary.md")
-            else -> setOf("reply_craft.md", "vibe_calibration.md")
-        }
+        CoachTask.END -> setOf("reply_craft.md", "vibe_calibration.md")
         CoachTask.REPLY -> setOf("reply_craft.md")
         CoachTask.CONSULT -> emptySet()
     }
@@ -53,7 +49,7 @@ object SkillDigest {
         val sb = StringBuilder()
         sb.append("任务:").append(task.wire).append('\n')
         if (userGoal.isNotBlank()) sb.append("用户诉求:").append(userGoal).append('\n')
-        if (endMode.isNotBlank()) sb.append("收尾类型:").append(endMode).append('\n')
+        if (endMode.isNotBlank()) sb.append("离开类型:").append(endMode).append('\n')
         sb.append(relationship).append('\n').append(background).append('\n')
         if (memoryContext.isNotBlank()) sb.append(memoryContext).append('\n')
         snapshot?.title?.let { sb.append(it).append('\n') }

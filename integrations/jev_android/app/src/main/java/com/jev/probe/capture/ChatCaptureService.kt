@@ -795,13 +795,35 @@ open class ChatCaptureService : AccessibilityService() {
         backfillActive = true
         backfillToken = token
         backfillTitle = title
+        CrashLogger.diag(this, "backfill start target=$target")
         overlay?.showBackfillProgress()
         overlay?.setPanelTouchPassthrough(true)
+        // The prompt panel was focusable a moment ago. Poll until the chat window
+        // is the active window again instead of guessing a fixed delay — reading
+        // while our own overlay owns focus would look like a conversation switch.
+        awaitChatWindowForBackfill(pkg, title, target, token, 0)
+    }
+
+    private fun awaitChatWindowForBackfill(pkg: String, title: String?, target: Int,
+                                           token: WorkToken, attempt: Int) {
+        if (!backfillActive || !session.isCurrent(token)) return
+        val live = rootInActiveWindow?.packageName?.toString()
+        if (live == pkg) return startBackfillLoop(pkg, title, target, token)
+        if (attempt >= BACKFILL_FOCUS_RETRIES) {
+            stopBackfill(notify = false)
+            overlay?.showError("补录前无法回到聊天窗口，请保持微信/QQ 前台后重试")
+            return
+        }
+        main.postDelayed({ awaitChatWindowForBackfill(pkg, title, target, token, attempt + 1) }, 100L)
+    }
+
+    private fun startBackfillLoop(pkg: String, title: String?, target: Int, token: WorkToken) {
+        if (!backfillActive || !session.isCurrent(token)) return
         val controller = BackfillController(
             options = BackfillOptions(target),
             postDelayed = { delay, block -> main.postDelayed(block, delay) },
             requestScreen = { cb -> requestBackfillScreen(pkg, cb) },
-            scroll = { step, done -> dispatchScroll(step, done) },
+            scroll = { step, done -> scrollBackfill(step, done) },
             widthPx = { resources.displayMetrics.widthPixels },
             running = { backfillActive && session.isCurrent(token) },
             progress = { state -> overlay?.updateBackfillProgress(state) },
@@ -852,12 +874,23 @@ open class ChatCaptureService : AccessibilityService() {
     private fun verifyBackfillFrame(pkg: String): BackfillRead? {
         val root = rootInActiveWindow ?: return BackfillRead.Unreadable
         val livePkg = root.packageName?.toString()
-        if (livePkg != pkg) return BackfillRead.IdentityChanged
+        // While our own focusable overlay (or the IME) owns the active window,
+        // the chat app is still behind it. That is a transient focus state, NOT
+        // a conversation switch — treating it as one made the very first read
+        // after tapping "开始补录" abort the run.
+        if (livePkg == packageName) return BackfillRead.Unreadable
+        if (livePkg != pkg) {
+            Log.i(TAG, "backfill identity changed: live=$livePkg expected=$pkg")
+            CrashLogger.diag(this, "identityChanged live=$livePkg expected=$pkg")
+            return BackfillRead.IdentityChanged
+        }
         val live = adapters[pkg]?.extract(root, resources) ?: return BackfillRead.Unreadable
         if (live.isGroup) return BackfillRead.IdentityChanged
         val liveTitle = live.title?.takeUnless { isTransientTitle(it) }
         val expected = backfillTitle ?: manualWindowTitle
         if (!expected.isNullOrBlank() && !liveTitle.isNullOrBlank() && liveTitle != expected) {
+            Log.i(TAG, "backfill title changed: liveLen=${liveTitle.length} expectedLen=${expected.length}")
+            CrashLogger.diag(this, "titleChanged liveLen=${liveTitle.length}")
             return BackfillRead.IdentityChanged
         }
         val band = backfillBand(live)
@@ -977,6 +1010,67 @@ open class ChatCaptureService : AccessibilityService() {
         }
     }
 
+    /**
+     * Perform one scroll step toward older messages.
+     *
+     * The node-level accessibility scroll is tried first: it does not inject
+     * touch events, so it is unaffected by our own floating windows and does not
+     * depend on the app honouring a synthesized drag. The coordinate gesture is
+     * kept as a fallback for lists that expose no scrollable node.
+     */
+    private fun scrollBackfill(step: ScrollStep, done: () -> Unit) {
+        val towardOlder = step.endY > step.startY
+        val node = findScrollableMessageList()
+        if (node != null) {
+            val action = if (towardOlder)
+                AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            else
+                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            val ok = runCatching { node.performAction(action) }.getOrDefault(false)
+            Log.i(TAG, "backfill scroll nodeAction=$ok older=$towardOlder")
+            CrashLogger.diag(this, "scroll node=$ok older=$towardOlder")
+            if (ok) { main.postDelayed(done, NODE_SCROLL_SETTLE_MS); return }
+        } else {
+            Log.i(TAG, "backfill scroll no scrollable node; falling back to gesture")
+            CrashLogger.diag(this, "scroll noNode -> gesture")
+        }
+        dispatchScroll(step, done)
+    }
+
+    /**
+     * The deepest scrollable node that overlaps the message band the most.
+     *
+     * Preferring the largest overlap keeps us off nested horizontal scrollers and
+     * off a scrollable input area.
+     */
+    private fun findScrollableMessageList(): AccessibilityNodeInfo? {
+        val root = rootInActiveWindow ?: return null
+        val h = resources.displayMetrics.heightPixels
+        val bandTop = (h * 0.10f).toInt()
+        val bandBottom = (h * 0.90f).toInt()
+        var best: AccessibilityNodeInfo? = null
+        var bestOverlap = 0
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.addLast(root)
+        var guard = 0
+        while (stack.isNotEmpty() && guard < 4000) {
+            guard++
+            val node = stack.removeLast()
+            if (node.isScrollable) {
+                val b = Rect(); node.getBoundsInScreen(b)
+                val overlap = minOf(b.bottom, bandBottom) - maxOf(b.top, bandTop)
+                // Ignore full-screen roots and tiny scrollers: both are usually
+                // the window itself or an unrelated horizontal strip.
+                if (overlap > bestOverlap && b.height() > h / 4) {
+                    bestOverlap = overlap
+                    best = node
+                }
+            }
+            for (i in node.childCount - 1 downTo 0) node.getChild(i)?.let { stack.addLast(it) }
+        }
+        return best
+    }
+
     /** Dispatch one synthesized drag inside the message area. */
     private fun dispatchScroll(step: ScrollStep, done: () -> Unit) {
         val path = Path().apply {
@@ -992,6 +1086,8 @@ open class ChatCaptureService : AccessibilityService() {
                 override fun onCancelled(g: GestureDescription?) { done() }
             }, null)
         }.getOrDefault(false)
+        Log.i(TAG, "backfill gesture accepted=$accepted y=${step.startY}->${step.endY} x=${step.startX}")
+        CrashLogger.diag(this, "gesture accepted=$accepted y=${step.startY}->${step.endY} x=${step.startX}")
         if (!accepted) main.postDelayed(done, 60L)
     }
 
@@ -1012,6 +1108,7 @@ open class ChatCaptureService : AccessibilityService() {
 
     private fun finishBackfill(token: WorkToken, pkg: String, title: String?, result: BackfillResult) {
         if (!session.isCurrent(token) || !session.reviewPending) return
+        CrashLogger.diag(this, "backfill done reason=${result.stopReason} msgs=${result.messages.size}")
         backfillActive = false
         backfillToken = null
         stopProjectionSession()
@@ -1693,6 +1790,8 @@ open class ChatCaptureService : AccessibilityService() {
         private const val WECHAT_PACKAGE = "com.tencent.mm"
         private const val QQ_PACKAGE = "com.tencent.mobileqq"
         private const val THROTTLE_WAIT_MS = 1100L
+        private const val BACKFILL_FOCUS_RETRIES = 30
+        private const val NODE_SCROLL_SETTLE_MS = 60L
         private const val REVIEW_FOCUS_RETRIES = 20
         private const val REVIEW_FOCUS_RETRY_MS = 50L
 

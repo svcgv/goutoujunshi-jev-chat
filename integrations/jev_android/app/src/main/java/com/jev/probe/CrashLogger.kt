@@ -33,6 +33,7 @@ object CrashLogger {
 
     private const val TAG = "JEVASSIST"
     private const val MAX_BYTES = 64 * 1024
+    private const val DIAG_MAX_BYTES = 64 * 1024
 
     @Volatile private var logFile: File? = null
 
@@ -67,6 +68,25 @@ object CrashLogger {
             if (target.isFile && target.length() > MAX_BYTES) target.delete()
             target.parentFile?.mkdirs()
             target.appendText("=== $stamp [note] ===\n$message\n\n", Charsets.UTF_8)
+        }
+    }
+
+    /**
+     * Lightweight behavioural trace for flows that are hard to reproduce, kept in
+     * a SEPARATE bounded file so it never pollutes the crash/error log the user
+     * reads in Settings.
+     *
+     * Callers must pass numbers, enums and lengths only — never chat text,
+     * conversation titles or keys.
+     */
+    fun diag(context: Context?, message: String) {
+        if (context == null) return
+        val target = File(context.applicationContext.filesDir, "diag.log")
+        val stamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+        runCatching {
+            if (target.isFile && target.length() > DIAG_MAX_BYTES) target.delete()
+            target.parentFile?.mkdirs()
+            target.appendText("$stamp $message\n", Charsets.UTF_8)
         }
     }
 

@@ -31,6 +31,10 @@ import com.jev.probe.core.ReviewedTranscript
 import com.jev.probe.core.GoutouGuidance
 import com.jev.probe.core.Prefs
 import com.jev.probe.core.RankedReply
+import com.jev.probe.core.Msg
+import com.jev.probe.capture.BackfillResult
+import com.jev.probe.capture.BackfillState
+import com.jev.probe.capture.MessageCompleteness
 import com.jev.probe.SettingsActivity
 import com.jev.probe.KlineActivity
 import kotlin.math.abs
@@ -72,6 +76,11 @@ class OverlayController(private val ctx: Context) {
 
     /** Bubble menu → one manual screenshot + OCR of whatever app is open. */
     var onProjectionCapture: (() -> Unit)? = null
+    /** Bubble menu → automatic history backfill (scroll toward older messages). */
+    var onBackfill: (() -> Unit)? = null
+    var onBackfillStop: (() -> Unit)? = null
+    /** Bubble tap; return true to consume the tap (e.g. stop a running backfill). */
+    var onBubbleTap: (() -> Boolean)? = null
     var onImportScreenshot: (() -> Unit)? = null
     var onShowHistory: (() -> Unit)? = null
 
@@ -285,7 +294,7 @@ class OverlayController(private val ctx: Context) {
                 MotionEvent.ACTION_UP -> {
                     v.removeCallbacks(longPress)
                     if (moved) saveBubblePosition(params)
-                    else if (!longFired) toggle()
+                    else if (!longFired && onBubbleTap?.invoke() != true) toggle()
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> {
@@ -321,7 +330,7 @@ class OverlayController(private val ctx: Context) {
             actionGroup(listOf(
                 "截屏识别一次" to { onOcrCapture?.invoke() },
                 "绑定对象 / 记忆设置" to { onSaveContact?.invoke() },
-                "系统授权截屏" to { onProjectionCapture?.invoke() },
+                "自动补录会话历史" to { onBackfill?.invoke() },
                 "导入聊天截图" to { onImportScreenshot?.invoke() },
                 "查看对象历史" to { onShowHistory?.invoke() },
                 "设置标题识别区域" to { onCalibrateTitleRegion?.invoke() },
@@ -402,7 +411,7 @@ class OverlayController(private val ctx: Context) {
                 bigButton("分析当前对话") { onManualAnalyze?.invoke() },
                 actionGroup(listOf(
                     "绑定对象 / 记忆设置" to { onSaveContact?.invoke() },
-                    "系统授权截屏" to { onProjectionCapture?.invoke() },
+                    "自动补录会话历史" to { onBackfill?.invoke() },
                     "导入聊天截图" to { onImportScreenshot?.invoke() },
                     "查看对象历史" to { onShowHistory?.invoke() },
                     "设置标题识别区域" to { onCalibrateTitleRegion?.invoke() }))))
@@ -487,6 +496,144 @@ class OverlayController(private val ctx: Context) {
             if (expanded) expandPanel()
             setPanelFocusable(true)
         }
+    }
+
+    // ------------------------------------------------------------ backfill
+
+    /** Confirm the run before any scrolling happens. */
+    fun showBackfillPrompt(title: String?, defaultTarget: Int,
+                           onStart: (Int) -> Unit, onCancel: () -> Unit) {
+        ensureRoot(); ensurePanel()
+        reviewCancel = onCancel
+        val count = EditText(ctx).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText(defaultTarget.coerceIn(10, 100).toString())
+            textSize = 15f
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = card(10, Color.WHITE, stroke = true)
+        }
+        setContent(listOf(
+            line("自动补录会话历史", "#24382d", 16f, true),
+            hint(title?.let { "当前会话：$it" } ?: "当前会话身份待确认"),
+            hint("将从会话底部开始，自动向上翻页读取最近的消息，默认 50 条（10–100）。" +
+                "只读取屏幕上的文字，不发送、不上传截图，结束后由你核对原文。"),
+            hint("补录条数（10–100）"),
+            count,
+            bigButton("开始补录") {
+                val n = count.text.toString().trim().toIntOrNull()?.coerceIn(10, 100) ?: defaultTarget
+                releaseFocus()
+                onStart(n)
+            },
+            actionGroup(listOf("取消" to { finishReview(); releaseFocus(); onCancel() }))))
+        if (!expanded) toggle()
+        panelRoot?.post { if (expanded) expandPanel(); setPanelFocusable(true) }
+    }
+
+    /** Live progress while the run scrolls the chat. */
+    internal fun showBackfillProgress() {
+        ensureRoot(); ensurePanel(); bubble?.alpha = 1f
+        setContent(listOf(
+            line("自动补录中…", "#24382d", 16f, true),
+            hint("正在回到会话底部并向上读取；请勿手动滑动聊天窗口。点一下悬浮球可停止。")))
+        if (!expanded) toggle()
+        setPanelFocusable(false)
+    }
+
+    internal fun updateBackfillProgress(state: BackfillState) {
+        if (panelRoot == null) return
+        setContent(listOf(
+            line("自动补录中…", "#24382d", 16f, true),
+            hint(state.progressText().ifBlank { "准备中…" }),
+            hint("请勿手动滑动聊天窗口；点一下悬浮球可停止。")))
+    }
+
+    /**
+     * Per-message review. Unlike the single-line format, each message keeps its
+     * own editor, so a long bubble with internal newlines round-trips intact.
+     */
+    internal fun showMessageReview(title: String?, result: BackfillResult,
+                          onConfirm: (List<Msg>) -> Unit, onCancel: () -> Unit) {
+        ensureRoot(); ensurePanel()
+        reviewCancel = onCancel
+        val rows = ArrayList<ReviewRow>()
+        val container = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+
+        result.messages.forEachIndexed { index, cm ->
+            val row = ReviewRow(cm.side)
+            val header = TextView(ctx).apply {
+                textSize = 12f
+                setPadding(0, dp(6), 0, dp(2))
+                setTextColor(Color.parseColor("#2B5245"))
+                setTypeface(typeface, Typeface.BOLD)
+                text = reviewHeader(index, row.side, cm.completeness)
+                setOnClickListener {
+                    row.side = nextSide(row.side)
+                    text = reviewHeader(index, row.side, cm.completeness)
+                }
+            }
+            val editor = EditText(ctx).apply {
+                setText(cm.text)
+                setTextColor(Color.parseColor("#24382d"))
+                textSize = 13f
+                gravity = Gravity.TOP
+                maxLines = 8
+                setPadding(dp(8), dp(6), dp(8), dp(6))
+                background = card(8, Color.WHITE, stroke = true)
+            }
+            row.read = { editor.text.toString() }
+            rows.add(row)
+            container.addView(header)
+            container.addView(editor)
+        }
+
+        val confirm = bigButton("确认原文并分析") {
+            val msgs = rows.mapNotNull { r ->
+                val t = r.read().trim()
+                if (t.isEmpty()) null else Msg(r.side, t)
+            }
+            when {
+                msgs.isEmpty() -> toast("至少保留一条消息")
+                msgs.any { it.side == "unknown" } -> toast("请点击每一行把“待确认”改成我或对方")
+                else -> { releaseFocus(); onConfirm(msgs) }
+            }
+        }
+        setContent(listOf(
+            line("核对本轮对话", "#24382d", 16f, true),
+            hint(title?.let { "当前会话：$it" } ?: "当前会话身份待确认"),
+            hint(result.summary()),
+            hint("点击每行标题可切换 我／对方；正文可直接编辑，留空即删除该条。"),
+            container,
+            confirm,
+            actionGroup(listOf("放弃本轮" to { finishReview(); releaseFocus(); onCancel() }))))
+        if (!expanded) toggle()
+        panelRoot?.post { if (expanded) expandPanel(); setPanelFocusable(true) }
+    }
+
+    private class ReviewRow(var side: String) {
+        lateinit var read: () -> String
+    }
+
+    private fun nextSide(side: String): String = when (side) {
+        "unknown" -> "other"
+        "other" -> "me"
+        else -> "unknown"
+    }
+
+    private fun sideWord(side: String): String = when (side) {
+        "me" -> "我"
+        "other" -> "对方"
+        else -> "待确认"
+    }
+
+    private fun reviewHeader(index: Int, side: String, completeness: MessageCompleteness): String {
+        val flag = when (completeness) {
+            MessageCompleteness.COMPLETE -> ""
+            MessageCompleteness.STITCHED -> "  [跨屏已拼接]"
+            MessageCompleteness.PARTIAL -> "  [可能缺失]"
+            MessageCompleteness.CONFLICT -> "  [存在冲突]"
+            MessageCompleteness.UNKNOWN -> "  [非文本]"
+        }
+        return "${index + 1}. ${sideWord(side)}$flag"
     }
 
     /**
@@ -586,6 +733,21 @@ class OverlayController(private val ctx: Context) {
      * Take the overlay out of the picture for one screenshot. INVISIBLE, not
      * removed: the window (and everything on it) must survive the round trip.
      */
+    /**
+     * While a backfill is driving the chat, the progress panel must not swallow
+     * the synthesized scroll gestures. NOT_TOUCHABLE lets them reach the chat
+     * window underneath; the bubble still works as the stop affordance.
+     */
+    fun setPanelTouchPassthrough(enabled: Boolean) {
+        val root = panelRoot ?: return
+        val lp = panelLp ?: return
+        lp.flags = if (enabled)
+            lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        else
+            lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        runCatching { wm.updateViewLayout(root, lp) }
+    }
+
     fun setHiddenForShot(hidden: Boolean) {
         root?.visibility = if (OverlayVisibility.bubbleVisible(hidden)) View.VISIBLE else View.INVISIBLE
         panelRoot?.visibility = if (OverlayVisibility.panelVisible(expanded, hidden))
@@ -607,7 +769,7 @@ class OverlayController(private val ctx: Context) {
             hint(msg),
             actionGroup(listOf(
                 "重新识别" to { onOcrCapture?.invoke() },
-                "系统授权截屏" to { onProjectionCapture?.invoke() },
+                "自动补录会话历史" to { onBackfill?.invoke() },
                 "导入聊天截图" to { onImportScreenshot?.invoke() }))))
         bubble?.alpha = 0.55f
         toast(msg)

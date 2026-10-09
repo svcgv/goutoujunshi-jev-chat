@@ -2,12 +2,15 @@ package com.jev.probe.capture
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.accessibilityservice.AccessibilityService.GestureResultCallback
+import android.accessibilityservice.GestureDescription
 import android.content.res.Configuration
 import com.jev.probe.CapturePermissionActivity
 import com.jev.probe.capture.ocr.CaptureHandoff
 import com.jev.probe.core.kb.Contact
 import com.jev.probe.core.kb.ConversationBinding
 import android.graphics.Bitmap
+import android.graphics.Path
 import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
@@ -103,6 +106,8 @@ open class ChatCaptureService : AccessibilityService() {
 
     /** Manual identity only survives the current capture round, never an app switch. */
     private var externalCapturePending = false
+    @Volatile private var backfillActive = false
+    private var backfillToken: WorkToken? = null
     private var waitingExternalBitmap: Bitmap? = null
     private var manualWindowTitle: String? = null
     private val debounce = Runnable {
@@ -222,6 +227,11 @@ open class ChatCaptureService : AccessibilityService() {
         }
         overlay?.onSaveContact = { guarded("bind") { showBinding() } }
         overlay?.onProjectionCapture = { guarded("projection") { startExternalCapture(false) } }
+        overlay?.onBackfill = { guarded("backfill") { startBackfillPrompt() } }
+        overlay?.onBackfillStop = { guarded("backfill") { stopBackfill(notify = true) } }
+        overlay?.onBubbleTap = {
+            if (backfillActive) { guarded("backfill") { stopBackfill(notify = true) }; true } else false
+        }
         overlay?.onImportScreenshot = { guarded("import") { startExternalCapture(true) } }
         overlay?.onShowHistory = onShowHistory@{
             val snapshot = currentSnapshot
@@ -444,6 +454,9 @@ open class ChatCaptureService : AccessibilityService() {
 
     /** Invalidate every callback before clearing UI state or starting another round. */
     private fun cancelWork() {
+        backfillActive = false
+        backfillToken = null
+        overlay?.setPanelTouchPassthrough(false)
         session.reset()
         externalCapturePending = false
         waitingExternalBitmap?.recycle(); waitingExternalBitmap = null
@@ -738,6 +751,137 @@ open class ChatCaptureService : AccessibilityService() {
         } catch (_: Exception) {
             CaptureHandoff.finish(requestId, null, "无法打开系统截屏或导入入口")
         }
+    }
+
+    // -------------------------------------------------------------- backfill
+
+    /** Validate the window, then confirm the run before touching the chat. */
+    private fun startBackfillPrompt() {
+        if (backfillActive) { overlay?.toast("补录正在进行"); return }
+        if (session.reviewPending || session.analyzing) { overlay?.toast("请先完成当前操作"); return }
+        val root = rootInActiveWindow ?: return
+        val pkg = root.packageName?.toString().orEmpty()
+        if (pkg != WECHAT_PACKAGE && pkg != QQ_PACKAGE) {
+            overlay?.showError("请先进入微信或 QQ 的一对一聊天"); return
+        }
+        val live = adapters[pkg]?.extract(root, resources)
+            ?: run { overlay?.showError("当前不在可识别的聊天窗口"); return }
+        if (live.isGroup) { overlay?.showError("暂不支持群聊"); return }
+        if (!prefs.isAllowed(live.title)) { overlay?.showError("此会话不在白名单内"); return }
+        activePkg = pkg
+        val title = live.title?.takeUnless { isTransientTitle(it) } ?: manualWindowTitle
+        overlay?.showBackfillPrompt(title, BackfillPlan.TARGET_MESSAGES,
+            onStart = { n -> startBackfill(n, pkg, title) },
+            onCancel = { overlay?.showIdle(title) })
+    }
+
+    private fun startBackfill(target: Int, pkg: String, title: String?) {
+        if (backfillActive) return
+        val token = session.beginReview() ?: return
+        backfillActive = true
+        backfillToken = token
+        overlay?.showBackfillProgress()
+        overlay?.setPanelTouchPassthrough(true)
+        val controller = BackfillController(
+            options = BackfillOptions(target),
+            postDelayed = { delay, block -> main.postDelayed(block, delay) },
+            readScreen = { readBackfillScreen(pkg) },
+            scroll = { step, done -> dispatchScroll(step, done) },
+            widthPx = { resources.displayMetrics.widthPixels },
+            running = { backfillActive && session.isCurrent(token) },
+            progress = { state -> overlay?.updateBackfillProgress(state) },
+            onFinish = { result -> main.post { finishBackfill(token, pkg, title, result) } })
+        controller.start()
+    }
+
+    /** Read the visible screen as messages plus the message-area bounds. */
+    private fun readBackfillScreen(pkg: String): BackfillScreen? {
+        val root = rootInActiveWindow ?: return null
+        if (root.packageName?.toString() != pkg) return null
+        val snap = adapters[pkg]?.extract(root, resources) ?: return null
+        if (snap.isGroup) return null
+        val messages = snap.messages.filter { it.text.isNotBlank() }
+        if (messages.isEmpty()) return null
+        val h = resources.displayMetrics.heightPixels
+        val top = snap.viewportTop ?: (h * 0.14f).toInt()
+        val bottom = snap.viewportBottom ?: (h * 0.84f).toInt()
+        if (bottom - top < 80) return null
+        return BackfillScreen(messages, top, bottom)
+    }
+
+    /** Dispatch one synthesized drag inside the message area. */
+    private fun dispatchScroll(step: ScrollStep, done: () -> Unit) {
+        val path = Path().apply {
+            moveTo(step.startX.toFloat(), step.startY.toFloat())
+            lineTo(step.startX.toFloat(), step.endY.toFloat())
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, step.durationMs))
+            .build()
+        val accepted = runCatching {
+            dispatchGesture(gesture, object : GestureResultCallback() {
+                override fun onCompleted(g: GestureDescription?) { done() }
+                override fun onCancelled(g: GestureDescription?) { done() }
+            }, null)
+        }.getOrDefault(false)
+        if (!accepted) main.postDelayed(done, 60L)
+    }
+
+    private fun stopBackfill(notify: Boolean) {
+        if (!backfillActive) return
+        backfillActive = false
+        backfillToken = null
+        overlay?.setPanelTouchPassthrough(false)
+        overlay?.setHiddenForShot(false)
+        if (notify) {
+            val title = currentSnapshot?.title
+            session.reset()
+            overlay?.showIdle(title)
+            overlay?.toast("已停止补录")
+        }
+    }
+
+    private fun finishBackfill(token: WorkToken, pkg: String, title: String?, result: BackfillResult) {
+        if (!session.isCurrent(token) || !session.reviewPending) return
+        backfillActive = false
+        backfillToken = null
+        overlay?.setPanelTouchPassthrough(false)
+        if (result.messages.isEmpty()) {
+            session.confirmReview(token)
+            overlay?.showError("没有补录到消息：${result.summary()}")
+            return
+        }
+        overlay?.showMessageReview(title, result,
+            onConfirm = { messages -> confirmBackfill(token, pkg, title, messages) },
+            onCancel = {
+                if (session.isCurrent(token)) {
+                    session.confirmReview(token)
+                    cancelWork()
+                    overlay?.showIdle(title)
+                }
+            })
+    }
+
+    /** Persist (when memory is on) and then analyse the reviewed backfill. */
+    private fun confirmBackfill(token: WorkToken, pkg: String, title: String?, messages: List<Msg>) {
+        if (!session.isCurrent(token) || !session.reviewPending) return
+        val identityTitle = title ?: manualWindowTitle
+        if (identityTitle.isNullOrBlank()) { overlay?.showError("无法确认当前会话身份，请重新绑定"); return }
+        val binding = boundContact(identityTitle, pkg)
+        if (binding == null) { overlay?.showError("请先绑定当前会话对象"); return }
+        if (!session.confirmReview(token)) return
+        overlay?.showLoading()
+        val snapshot = ChatSnapshot(identityTitle, messages,
+            note = "自动补录 · 原文与说话人已人工核对")
+        currentSnapshot = snapshot
+        activePkg = pkg
+        updateBindingSummary(snapshot, pkg)
+        lastAnalysis = null; lastAnalyzedSnapshot = null; lastContext = null
+        if (prefs.contextEnabled && !KbStore.get(this).rememberBackfill(binding.contactId, pkg, messages)) {
+            overlay?.showError("历史保存失败，本轮未调用模型，请重试"); return
+        }
+        pendingSnapshot = snapshot
+        runAnalysis(token)
     }
 
     private fun runAnalysis(token: WorkToken = session.current) {
@@ -1377,6 +1521,7 @@ open class ChatCaptureService : AccessibilityService() {
     companion object {
         private const val TAG = "JEVASSIST"
         private const val WECHAT_PACKAGE = "com.tencent.mm"
+        private const val QQ_PACKAGE = "com.tencent.mobileqq"
         private const val REVIEW_FOCUS_RETRIES = 20
         private const val REVIEW_FOCUS_RETRY_MS = 50L
 

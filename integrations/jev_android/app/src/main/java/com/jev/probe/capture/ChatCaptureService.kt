@@ -15,6 +15,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.jev.probe.CrashLogger
 import com.jev.probe.capture.ocr.MlKitOcr
 import com.jev.probe.capture.ocr.OcrLine
 import com.jev.probe.capture.ocr.ScreenCapture
@@ -140,11 +141,13 @@ open class ChatCaptureService : AccessibilityService() {
             if (!enabled) overlay?.hide() else maybeCapture()
         }
         overlay?.onManualAnalyze = {
+          guarded("analyze") {
             if (!session.reviewPending) {
                 val snapshot = currentSnapshot
                 if (snapshot == null || snapshot.messages.isEmpty()) ocrCaptureManual()
                 else reviewSnapshot(snapshot, activePkg ?: foregroundPkg ?: "")
             }
+          }
         }
         overlay?.onDetails = {
             val snapshot = lastAnalyzedSnapshot
@@ -204,9 +207,9 @@ open class ChatCaptureService : AccessibilityService() {
                 }
             }
         }
-        overlay?.onSaveContact = { showBinding() }
-        overlay?.onProjectionCapture = { startExternalCapture(false) }
-        overlay?.onImportScreenshot = { startExternalCapture(true) }
+        overlay?.onSaveContact = { guarded("bind") { showBinding() } }
+        overlay?.onProjectionCapture = { guarded("projection") { startExternalCapture(false) } }
+        overlay?.onImportScreenshot = { guarded("import") { startExternalCapture(true) } }
         overlay?.onShowHistory = onShowHistory@{
             val snapshot = currentSnapshot
             if (snapshot == null || !snapshotIsCurrent(snapshot, activePkg.orEmpty())) {
@@ -214,13 +217,13 @@ open class ChatCaptureService : AccessibilityService() {
                 return@onShowHistory
             }
             val store = KbStore.get(this)
-            val binding = store.binding(snapshot.title, activePkg.orEmpty())
+            val binding = boundContact(snapshot.title, activePkg.orEmpty())
             val lines = binding?.let { store.recentLog(it.contactId, 100) }.orEmpty()
             overlay?.showDetails(if (binding == null) "请先绑定当前会话" else lines.joinToString("\n") {
                 (if (it.side == "me") "我：" else "对方：") + it.text
             }.ifBlank { "没有保存过核对后的消息" }, "本机对象历史")
         }
-        overlay?.onOcrCapture = { ocrCaptureManual() }
+        overlay?.onOcrCapture = { guarded("ocr") { ocrCaptureManual() } }
         // Keep the process at foreground importance so MIUI does not freeze us.
         runCatching { KeepAliveService.start(this) }
         // Load the bundled OCR model now, off the main thread: the first
@@ -245,9 +248,17 @@ open class ChatCaptureService : AccessibilityService() {
         // underneath. Neither is a real navigation, so review/cancel must remain
         // the sole owners of this panel until the user chooses one.
         if (externalCapturePending || shouldIgnoreAccessibilityEvents(session.reviewPending)) return
-        if (manualWindowTitle != null && type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-            event.packageName?.toString() == activePkg) {
-            cancelWork() // We cannot prove an opaque window is still the same person.
+        if (manualWindowTitle != null && type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            // Our own overlay taking focus for the binding/review editor, and IME
+            // windows, are not navigation. Only a real departure from the chat
+            // window invalidates a binding the user already confirmed.
+            val liveRoot = rootInActiveWindow
+            val livePkg = liveRoot?.packageName?.toString()
+            val stillInChat = liveRoot?.let { adapters[activePkg]?.extract(it, resources) } != null
+            if (ConversationSwitch.invalidatesOpaqueBinding(
+                    event.packageName?.toString(), activePkg, packageName, livePkg, stillInChat)) {
+                cancelWork()
+            }
         }
 
         // Decide "did we leave the chat app" from the REAL active window, not the
@@ -308,7 +319,9 @@ open class ChatCaptureService : AccessibilityService() {
         // a transient "连接中…" title for a moment right after opening a thread.
         val snapshot = stabilizeTitle(rawSnapshot)
         if (!prefs.isAllowed(snapshot.title)) { overlay?.hide(); return }
-        if (pkg != activePkg || currentSnapshot?.title != snapshot.title) {
+        val trackedKey = currentSnapshot?.let { conversationKey(it.title) }
+        val incomingKey = conversationKey(snapshot.title)
+        if (ConversationSwitch.isNewConversation(pkg != activePkg, trackedKey, incomingKey)) {
             cancelWork()
             activePkg = pkg
             currentSnapshot = snapshot
@@ -316,6 +329,9 @@ open class ChatCaptureService : AccessibilityService() {
             // back only when the user taps the bubble.
             overlay?.collapse()
             overlay?.resetForNewConversation()
+        } else if (currentSnapshot == null) {
+            activePkg = pkg
+            currentSnapshot = snapshot
         }
         updateBindingSummary(snapshot, pkg.orEmpty())
         if (pkg == WECHAT_PACKAGE && snapshot.messages.isEmpty()) {
@@ -412,9 +428,42 @@ open class ChatCaptureService : AccessibilityService() {
         overlay?.resetForNewConversation()
     }
 
+    /**
+     * The key that identifies the on-screen conversation. A readable title wins;
+     * an unreadable one (WeChat and other self-drawn windows) falls back to the
+     * name the user confirmed, so a bound window stays bound instead of asking
+     * the user to bind again on every capture.
+     */
+    private fun conversationKey(title: String?): String? =
+        ConversationBindingKey.resolve(title, manualWindowTitle)
+
+    /** The contact bound to this conversation, or null when it is not bound yet. */
+    private fun boundContact(title: String?, pkg: String): ConversationBinding? {
+        val key = conversationKey(title) ?: return null
+        return KbStore.get(this).binding(key, pkg)
+    }
+
+    /**
+     * Runs an overlay callback defensively.
+     *
+     * The overlay lives in this same process, so an exception raised while
+     * handling a tap would otherwise crash the app and silently drop the
+     * accessibility service. Anything unexpected is recorded and shown, so the
+     * UI stays alive and the failure is diagnosable.
+     */
+    private fun guarded(where: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (t: Throwable) {
+            Log.e(TAG, "overlay callback failed: $where", t)
+            CrashLogger.recordCaught(this, "overlay:$where", t)
+            runCatching { overlay?.showError("操作失败：${t.javaClass.simpleName}（已记录，可重试）") }
+        }
+    }
+
     private fun updateBindingSummary(snapshot: ChatSnapshot, pkg: String) {
         val store = KbStore.get(this)
-        val binding = store.binding(snapshot.title, pkg)
+        val binding = boundContact(snapshot.title, pkg)
         val contact = binding?.let { store.contact(it.contactId) }
         overlay?.setBindingSummary(if (contact == null) "未绑定对象 · 不加载历史"
             else "对象：${contact.name} · 已存 ${store.logSize(contact.id)} 条 · " +
@@ -434,20 +483,34 @@ open class ChatCaptureService : AccessibilityService() {
             (title.isNotBlank() && !isTransientTitle(liveBefore?.title) && liveBefore?.title != title)) {
             cancelWork(); overlay?.showError("当前会话无法确认，请重新识别"); return
         }
-        val bound = store.binding(title, pkg)
+        val bound = boundContact(title, pkg)
+        // Adopt the bound name as this window's key for the current session, so
+        // repeated reads of a title-less window keep resolving to the same object.
+        if (title.isBlank()) {
+            bound?.let { manualWindowTitle = it.title }
+        }
         val token = session.beginReview() ?: return
+        /**
+         * Run [action] after the editor has released focus.
+         *
+         * This deliberately does NOT require the chat app to become the active
+         * window again: the binding panel is focusable and the IME may hold focus,
+         * which previously timed out and was misread as "conversation changed",
+         * so the binding was never written and the user was asked to bind again.
+         * The chat window is verified only as a safety check when it IS visible.
+         */
         fun done(action: () -> Unit) {
-            // The focusable editor must release focus before verifying the chat identity.
             fun waitForChat(attempt: Int) {
                 if (!session.isCurrent(token)) return
                 val root = rootInActiveWindow
                 val actualPkg = root?.packageName?.toString()
-                if ((actualPkg == null || actualPkg == packageName) && attempt < 20) {
+                if (actualPkg == packageName && attempt < 20) {
+                    // Our overlay still owns focus; give it a moment to hand back.
                     main.postDelayed({ waitForChat(attempt + 1) }, 50); return
                 }
-                val live = root?.let { adapters[pkg]?.extract(it, resources) }
-                if (actualPkg != pkg || live?.isGroup == true ||
-                    (!live?.title.isNullOrBlank() && title.isNotBlank() && live?.title != title)) {
+                val live = root?.takeIf { actualPkg == pkg }?.let { adapters[pkg]?.extract(it, resources) }
+                if (actualPkg == pkg && (live?.isGroup == true ||
+                        (!live?.title.isNullOrBlank() && title.isNotBlank() && live?.title != title))) {
                     cancelWork(); overlay?.showError("会话已切换，请重新选择对象"); return
                 }
                 session.confirmReview(token)
@@ -469,6 +532,9 @@ open class ChatCaptureService : AccessibilityService() {
                 }
                 if (remember) prefs.contextEnabled = true
                 if (title.isBlank()) manualWindowTitle = identityTitle
+                // The tracked snapshot carries the confirmed name; for an opaque
+                // window that name also becomes the stable lookup key, so the next
+                // capture matches instead of looking like a new conversation.
                 currentSnapshot = snapshot.copy(title = identityTitle)
                 activePkg = pkg
                 lastAnalysis = null; lastContext = null; lastAnalyzedSnapshot = null
@@ -876,8 +942,10 @@ open class ChatCaptureService : AccessibilityService() {
     /** Both tree extraction and OCR require a reviewed transcript before model calls. */
     private fun reviewSnapshot(snapshot: ChatSnapshot, pkg: String) {
         if (snapshot.isGroup) { overlay?.showError("暂不支持群聊"); return }
-        if (KbStore.get(this).binding(snapshot.title, pkg) == null) {
-            showBinding { reviewSnapshot(currentSnapshot ?: snapshot, pkg) }
+        if (boundContact(snapshot.title, pkg) == null) {
+            // Bind once; the retry re-reads the live snapshot so it can never
+            // re-enter with a stale, already-cleared conversation.
+            showBinding { currentSnapshot?.let { if (session.current.isActive()) reviewSnapshot(it, pkg) } }
             return
         }
         if (!snapshotIsCurrent(snapshot, pkg)) {

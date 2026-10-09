@@ -397,6 +397,23 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
         })
+        // Diagnostics: surface the last recorded crash so a failure during
+        // binding/analysis can be reported instead of only "it stopped".
+        card2.addView(cardBtn("查看最近崩溃（如有）") {
+            val crash = CrashLogger.readLast(this)
+            if (crash.isNullOrBlank()) {
+                kbResult.text = "没有记录到的崩溃"
+            } else {
+                androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("最近崩溃")
+                    .setMessage(crash.takeLast(4000))
+                    .setPositiveButton("关闭", null)
+                    .setNeutralButton("清除") { _, _ ->
+                        CrashLogger.clear(this); kbResult.text = "已清除崩溃记录"
+                    }
+                    .show()
+            }
+        })
         card2.addView(kbResult)
         root.addView(card2)
 

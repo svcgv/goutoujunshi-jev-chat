@@ -147,6 +147,15 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
      * strategy and draft prompts. On-device only; default ON because it ships
      * with the app and materially improves judgment quality.
      */
+    /**
+     * Title areas the user selected by dragging over a real screenshot, keyed by
+     * chat app package so WeChat and QQ can differ. Stored as fractions of the
+     * image. An app with no entry is simply not read from pixels.
+     */
+    var titleRegions: String
+        get() = sp.getString(K_TITLE_REGION, "") ?: ""
+        set(v) = sp.edit().putString(K_TITLE_REGION, v.trim()).apply()
+
     var skillKnowledgeEnabled: Boolean
         get() = sp.getBoolean(K_SKILL_KB, true)
         set(v) = sp.edit().putBoolean(K_SKILL_KB, v).apply()
@@ -301,6 +310,7 @@ class Prefs(context: Context, prefsName: String = PREFS_MAIN) {
         private const val K_VISION_MODEL = "vision_model"
         private const val K_CTX_ENABLED = "context_enabled"
         private const val K_SKILL_KB = "skill_knowledge_enabled"
+        private const val K_TITLE_REGION = "title_region"
         private const val K_CTX_COUNT = "context_history_count"
         private const val K_AUTO_SUMMARY = "auto_summary"
         private const val K_OCR_ENGINE = "ocr_engine"

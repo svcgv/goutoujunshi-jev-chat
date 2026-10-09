@@ -29,7 +29,15 @@ data class ChatSnapshot(
     val messages: List<Msg>,
     val bubbleRects: List<BubbleRect> = emptyList(),
     val note: String? = null,
-    val isGroup: Boolean = false
+    val isGroup: Boolean = false,
+    /**
+     * Screen-space bounds of the message area as reported by the app adapter:
+     * the top of the first message and the top of the input box. Null means the
+     * adapter could not read that edge; the OCR crop then leaves it uncropped
+     * rather than guessing with a percentage of the screen.
+     */
+    val viewportTop: Int? = null,
+    val viewportBottom: Int? = null
 ) {
     val latestFrom: String? get() = messages.lastOrNull()?.side
 

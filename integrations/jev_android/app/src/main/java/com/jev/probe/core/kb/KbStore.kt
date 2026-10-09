@@ -159,12 +159,23 @@ class KbStore internal constructor(private val root: File, private val report: (
         ConversationBindings.resolve(bindings(), app, title)?.takeIf { contact(it.contactId) != null }
     }
 
+    /** Bindings for one app (used for message-fingerprint matching). */
+    fun bindingsForApp(app: String): List<ConversationBinding> = synchronized(lock) {
+        bindings().filter { it.app == app && contact(it.contactId) != null }
+    }
+
     fun bind(binding: ConversationBinding): Boolean = synchronized(lock) {
         if (binding.app.isBlank() || binding.title.isBlank() || contact(binding.contactId) == null) return false
         // Never overwrite an unreadable bindings file.
         if (bindingsFile.exists()) try { ConversationBindings.decode(bindingsFile.readText()) }
             catch (_: Exception) { return false }
-        val rows = bindings().filterNot { it.app == binding.app && it.title == binding.title.trim() }
+        // Drop any previous row for this same window (same app+title), and also
+        // collapse duplicates that point at the same contact in the same app —
+        // a contact has one conversation per app, so stale rows are just noise.
+        val rows = bindings().filterNot {
+            (it.app == binding.app && it.title == binding.title.trim()) ||
+                (it.app == binding.app && it.contactId == binding.contactId)
+        }
         writeAtomic(bindingsFile, ConversationBindings.encode(rows + binding.copy(title = binding.title.trim())).toString())
     }
 

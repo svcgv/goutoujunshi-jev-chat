@@ -51,6 +51,9 @@
                 android:resource="@xml/config_disguised" />
         </service>
 
+        <activity android:name=".calibrate.TitleCalibrationActivity"
+            android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />
+
         <activity android:name=".CapturePermissionActivity" android:exported="false"
             android:excludeFromRecents="true" android:taskAffinity="" />
         <service android:name=".capture.ocr.ProjectionCaptureService" android:exported="false"

@@ -74,6 +74,9 @@ class OverlayController(private val ctx: Context) {
     var onProjectionCapture: (() -> Unit)? = null
     var onImportScreenshot: (() -> Unit)? = null
     var onShowHistory: (() -> Unit)? = null
+
+    /** Bubble menu → calibrate the conversation-title region for the current app. */
+    var onCalibrateTitleRegion: (() -> Unit)? = null
     private var bindingSummary = "未绑定对象 · 不加载历史"
 
     fun setBindingSummary(value: String) { bindingSummary = value }
@@ -321,6 +324,7 @@ class OverlayController(private val ctx: Context) {
                 "系统授权截屏" to { onProjectionCapture?.invoke() },
                 "导入聊天截图" to { onImportScreenshot?.invoke() },
                 "查看对象历史" to { onShowHistory?.invoke() },
+                "设置标题识别区域" to { onCalibrateTitleRegion?.invoke() },
                 "打开设置" to { openSettings() },
                 "隐藏助手（本次）" to { hide() }))))
         if (!expanded) toggle()
@@ -400,7 +404,8 @@ class OverlayController(private val ctx: Context) {
                     "绑定对象 / 记忆设置" to { onSaveContact?.invoke() },
                     "系统授权截屏" to { onProjectionCapture?.invoke() },
                     "导入聊天截图" to { onImportScreenshot?.invoke() },
-                    "查看对象历史" to { onShowHistory?.invoke() }))))
+                    "查看对象历史" to { onShowHistory?.invoke() },
+                    "设置标题识别区域" to { onCalibrateTitleRegion?.invoke() }))))
         }
     }
 
@@ -593,6 +598,9 @@ class OverlayController(private val ctx: Context) {
      * landing on a group), and that must not pop the panel over the chat.
      */
     fun showError(msg: String) {
+        // Record the reason so it can be read from Settings even when logcat is
+        // restricted on the device.
+        runCatching { com.jev.probe.CrashLogger.note(ctx, "showError: $msg") }
         ensureRoot(); ensurePanel(); bubble?.alpha = 1f
         setContent(listOf(
             line("出错了", "#DC2626", 14f, true),

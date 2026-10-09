@@ -77,6 +77,15 @@ internal fun findTitleInActionBar(
  *  title never does. */
 private val WECHAT_TITLE_EXCLUDE_PUNCT = Regex("""[，。？！、]""")
 
+/** WeChat ids that carry message content or in-chat cards, never the title. */
+private val WECHAT_MESSAGE_NODE_IDS = setOf(
+    "com.tencent.mm:id/bkl",  // message bubble text
+    "com.tencent.mm:id/bit",  // mini-program / card label inside a bubble
+    "com.tencent.mm:id/biu",  // card title
+    "com.tencent.mm:id/biq",  // card subtitle
+    "com.tencent.mm:id/br1"   // in-chat timestamp
+)
+
 /** A WeChat group title's "(N)" member-count suffix, half- or full-width. */
 private val WECHAT_GROUP_COUNT_SUFFIX = Regex("""(?:\(|（)\d+(?:\)|）)""")
 
@@ -110,7 +119,13 @@ internal fun findWeChatTitle(
         guard++
         val node = stack.removeLast()
         val text = node.text?.toString()
-        if (!text.isNullOrBlank() && text.length <= 24 && !looksLikeTimestamp(text) &&
+        // Never take message content as the conversation name. On a real WeChat
+        // chat screen the only short text above the bubbles can be a mini-program
+        // card title ("小程序"), which used to be captured as the contact name and
+        // made the binding/identity logic compare the wrong key.
+        val id = node.viewIdResourceName.orEmpty()
+        val fromMessageArea = id in WECHAT_MESSAGE_NODE_IDS
+        if (!text.isNullOrBlank() && !fromMessageArea && text.length <= 24 && !looksLikeTimestamp(text) &&
             !WECHAT_TITLE_EXCLUDE_PUNCT.containsMatchIn(text)
         ) {
             val b = Rect(); node.getBoundsInScreen(b)
@@ -145,6 +160,7 @@ class WeChatAdapter : ChatAppAdapter {
         var firstBubbleTop = Int.MAX_VALUE
         var isChat = false
         var composer = false
+        var composerTop: Int? = null
 
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.addLast(root)
@@ -158,6 +174,7 @@ class WeChatAdapter : ChatAppAdapter {
             val desc = node.contentDescription?.toString().orEmpty()
             if (bounds.centerY() > res.displayMetrics.heightPixels * 0.55 &&
                 (node.isEditable || desc in listOf("切换到按住说话", "切换到键盘", "更多功能按钮"))) composer = true
+            if (id == COMPOSER_ID && bounds.height() > 0) composerTop = bounds.top
             if (id == BUBBLE_ID) {
                 isChat = true
                 if (!text.isNullOrBlank()) {
@@ -171,16 +188,26 @@ class WeChatAdapter : ChatAppAdapter {
         val title = findWeChatTitle(root, firstBubbleTop, width, res)
         // In a chat but nothing readable → empty snapshot, the OCR fallback cue.
         val group = title?.let { Regex("(?:\\(|\\uFF08)\\d+(?:\\)|\\uFF09)$").containsMatchIn(it) } == true
-        if (bubbles.isEmpty()) return if (isChat || composer) ChatSnapshot(title, emptyList(), isGroup = group) else null
+        val top = firstBubbleTop.takeIf { it != Int.MAX_VALUE }
+        if (bubbles.isEmpty()) {
+            return if (isChat || composer)
+                ChatSnapshot(title, emptyList(), isGroup = group,
+                    viewportTop = top, viewportBottom = composerTop)
+            else null
+        }
         bubbles.sortBy { it.first }
         val msgs = bubbles.map { (_, cx, text) ->
             Msg(if (cx > width / 2) "me" else "other", text)
         }
-        return ChatSnapshot(title, msgs, isGroup = group)
+        return ChatSnapshot(title, msgs, isGroup = group,
+            viewportTop = top, viewportBottom = composerTop)
     }
 
     companion object {
         private const val BUBBLE_ID = "com.tencent.mm:id/bkl"
+
+        /** WeChat's message input field; its top edge bounds the message area. */
+        private const val COMPOSER_ID = "com.tencent.mm:id/bkk"
     }
 }
 

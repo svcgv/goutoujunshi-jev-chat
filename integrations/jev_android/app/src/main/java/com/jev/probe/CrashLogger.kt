@@ -53,6 +53,23 @@ object CrashLogger {
             if (f.isFile && f.length() > 0) f.readText() else null
         }.getOrNull()
 
+    /**
+     * Persist a UI-level error message (no chat content) so failures can be
+     * diagnosed on devices that restrict logcat for third-party apps. The message
+     * and the reason it was shown end up in the same file the Settings screen reads.
+     */
+    fun note(context: Context?, message: String) {
+        val target = logFile ?: context?.let { File(it.applicationContext.filesDir, "crash.log") }
+            ?: return
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+        Log.e(TAG, "note: $message")
+        runCatching {
+            if (target.isFile && target.length() > MAX_BYTES) target.delete()
+            target.parentFile?.mkdirs()
+            target.appendText("=== $stamp [note] ===\n$message\n\n", Charsets.UTF_8)
+        }
+    }
+
     fun clear(context: Context) {
         runCatching { File(context.applicationContext.filesDir, "crash.log").delete() }
     }

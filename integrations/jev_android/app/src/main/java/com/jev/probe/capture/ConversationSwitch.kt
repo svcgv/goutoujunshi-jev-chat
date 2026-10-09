@@ -23,6 +23,28 @@ internal object ConversationSwitch {
     }
 
     /**
+     * Whether the messages on screen belong to a different conversation.
+     *
+     * Needed because some apps (WeChat) expose no title at all: a title-only
+     * comparison sees two conversations as identical and the previous one is kept.
+     * Overlap is the signal — the same chat repeats most of the same recent lines.
+     */
+    fun isDifferentByMessages(
+        trackedMessages: List<String>,
+        incomingMessages: List<String>,
+        minShared: Int = 1
+    ): Boolean {
+        val tracked = trackedMessages.mapNotNull { normalize(it) }.toSet()
+        val incoming = incomingMessages.mapNotNull { normalize(it) }.toSet()
+        if (tracked.isEmpty() || incoming.isEmpty()) return false
+        val shared = tracked.count { it in incoming }
+        return shared < minShared
+    }
+
+    private fun normalize(raw: String): String? =
+        raw.trim().lowercase().takeIf { it.isNotEmpty() }
+
+    /**
      * Should a window-state event drop an already-confirmed opaque binding?
      * Our own overlay taking focus, and IME windows, are not navigation.
      */

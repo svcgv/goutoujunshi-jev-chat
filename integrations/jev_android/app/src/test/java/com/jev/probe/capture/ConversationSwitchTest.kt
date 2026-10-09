@@ -52,6 +52,37 @@ class ConversationSwitchTest {
             stillInChatWindow = true))
     }
 
+    @Test fun messagesDecideWhenTitlesAreUnreadable() {
+        // WeChat gives no title. Two different chats therefore look identical to a
+        // title-only comparison, and the previous conversation was kept. The
+        // messages on screen must break the tie.
+        assertTrue(ConversationSwitch.isDifferentByMessages(
+            trackedMessages = listOf("你好", "吃了吗"),
+            incomingMessages = listOf("在吗", "周末有空吗")))
+        assertFalse(ConversationSwitch.isDifferentByMessages(
+            trackedMessages = listOf("你好", "吃了吗"),
+            incomingMessages = listOf("你好", "吃了吗")))
+    }
+
+    @Test fun partialOverlapIsTheSameConversation() {
+        // A new message arrives; most of the screen is unchanged.
+        assertFalse(ConversationSwitch.isDifferentByMessages(
+            trackedMessages = listOf("你好", "吃了吗", "刚看到"),
+            incomingMessages = listOf("你好", "吃了吗", "刚看到", "在忙吗")))
+    }
+
+    @Test fun aCompletelyDifferentScreenIsASwitch() {
+        assertTrue(ConversationSwitch.isDifferentByMessages(
+            trackedMessages = listOf("你好", "吃了吗", "刚看到"),
+            incomingMessages = listOf("文档发我", "好的", "收到")))
+    }
+
+    @Test fun emptyInputsNeverClaimASwitch() {
+        assertFalse(ConversationSwitch.isDifferentByMessages(emptyList(), listOf("你好")))
+        assertFalse(ConversationSwitch.isDifferentByMessages(listOf("你好"), emptyList()))
+        assertFalse(ConversationSwitch.isDifferentByMessages(emptyList(), emptyList()))
+    }
+
     @Test fun leavingTheChatWindowInvalidatesTheBinding() {
         assertTrue(ConversationSwitch.invalidatesOpaqueBinding(
             eventPackage = "com.tencent.mm", activePackage = "com.tencent.mm",

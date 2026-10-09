@@ -28,6 +28,7 @@ import com.jev.probe.core.WorkScope
 import com.jev.probe.core.WorkToken
 import com.jev.probe.core.kb.ChatContext
 import com.jev.probe.core.kb.ContextBuilder
+import com.jev.probe.core.kb.ConversationFingerprints
 import com.jev.probe.core.kb.KbStore
 import com.jev.probe.jev.JevClient
 import com.jev.probe.jev.VisionClient
@@ -143,9 +144,21 @@ open class ChatCaptureService : AccessibilityService() {
         overlay?.onManualAnalyze = {
           guarded("analyze") {
             if (!session.reviewPending) {
-                val snapshot = currentSnapshot
-                if (snapshot == null || snapshot.messages.isEmpty()) ocrCaptureManual()
-                else reviewSnapshot(snapshot, activePkg ?: foregroundPkg ?: "")
+                // Re-read the screen: a cached snapshot may belong to the chat the
+                // user was in before returning to the list and opening another one.
+                val root = rootInActiveWindow
+                val pkg = root?.packageName?.toString().orEmpty()
+                val adapter = adapters[pkg]
+                val live = root?.let { r -> adapter?.extract(r, resources) }
+                if (live != null && live.messages.isNotEmpty()) {
+                    maybeCapture()
+                    val fresh = currentSnapshot
+                    if (fresh != null && fresh.messages.isNotEmpty()) {
+                        reviewSnapshot(fresh, pkg)
+                    }
+                } else {
+                    ocrCaptureManual()
+                }
             }
           }
         }
@@ -223,6 +236,7 @@ open class ChatCaptureService : AccessibilityService() {
                 (if (it.side == "me") "我：" else "对方：") + it.text
             }.ifBlank { "没有保存过核对后的消息" }, "本机对象历史")
         }
+        overlay?.onCalibrateTitleRegion = { guarded("calibrate") { startTitleCalibration() } }
         overlay?.onOcrCapture = { guarded("ocr") { ocrCaptureManual() } }
         // Keep the process at foreground importance so MIUI does not freeze us.
         runCatching { KeepAliveService.start(this) }
@@ -275,15 +289,23 @@ open class ChatCaptureService : AccessibilityService() {
         // our own settings screens, the launcher, and the system UI.
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             val fg = rootInActiveWindow?.packageName?.toString()
-            if (fg != null && fg !in adapters) {
-                if (fg != activePkg) cancelWork()
-                foregroundPkg = fg
-                val drop = fg == packageName ||
-                    fg.contains("launcher", ignoreCase = true) ||
-                    fg == "com.miui.home" ||
-                    fg == "com.android.systemui"
-                if (drop) overlay?.hide() else overlay?.showIdle(null)
-                return
+            when (ForegroundApp.classify(fg, packageName, adapters.keys)) {
+                ForegroundApp.Kind.ChatApp -> Unit // handled below by maybeCapture()
+                ForegroundApp.Kind.OwnApp -> {
+                    // Our overlay window took/released focus. This is not a
+                    // navigation: keep the round (and an in-flight fill) alive and
+                    // leave the panel exactly as the user left it.
+                    foregroundPkg = packageName
+                    return
+                }
+                ForegroundApp.Kind.Foreign -> {
+                    if (ForegroundApp.shouldCancelWork(ForegroundApp.Kind.Foreign)) cancelWork()
+                    foregroundPkg = fg
+                    val home = fg?.contains("launcher", ignoreCase = true) == true ||
+                        fg == "com.miui.home" || fg == "com.android.systemui"
+                    if (home) overlay?.hide() else overlay?.showIdle(null)
+                    return
+                }
             }
         }
 
@@ -298,8 +320,13 @@ open class ChatCaptureService : AccessibilityService() {
         if (!session.current.isActive() || session.reviewPending) return
         val root = rootInActiveWindow ?: return
         val pkg = root.packageName?.toString()
-        if (manualWindowTitle != null && pkg == activePkg &&
-            adapters[pkg]?.extract(root, resources)?.title.isNullOrBlank()) return
+        // NOTE: there used to be an early return here whenever the live title was
+        // unreadable (always true for WeChat) and a confirmed name existed. It was
+        // meant to keep our own overlay from looking like a chat switch, but it
+        // also skipped the switch detection entirely: opening a different chat
+        // kept the previous conversation's snapshot, so the assistant analysed the
+        // wrong person. Focus changes are already handled in onAccessibilityEvent,
+        // so the check is not needed here.
         // Apps with no adapter are never handled automatically (v1.3 revision):
         // the only way in for them is the bubble menu's "截屏识别一次".
         val adapter = adapters[pkg] ?: return
@@ -321,7 +348,16 @@ open class ChatCaptureService : AccessibilityService() {
         if (!prefs.isAllowed(snapshot.title)) { overlay?.hide(); return }
         val trackedKey = currentSnapshot?.let { conversationKey(it.title) }
         val incomingKey = conversationKey(snapshot.title)
-        if (ConversationSwitch.isNewConversation(pkg != activePkg, trackedKey, incomingKey)) {
+        // Title-only comparison is blind on WeChat, where the title is never
+        // exposed: switching chats then kept the previous conversation. Fall back
+        // to the messages themselves when the keys cannot tell them apart.
+        val sameKeyOrUnknown = !ConversationSwitch.isNewConversation(
+            pkg != activePkg, trackedKey, incomingKey)
+        val switchedByMessages = sameKeyOrUnknown && currentSnapshot != null &&
+            ConversationSwitch.isDifferentByMessages(
+                currentSnapshot!!.messages.map { it.text }, snapshot.messages.map { it.text })
+        if (switchedByMessages || ConversationSwitch.isNewConversation(
+                pkg != activePkg, trackedKey, incomingKey)) {
             cancelWork()
             activePkg = pkg
             currentSnapshot = snapshot
@@ -353,7 +389,7 @@ open class ChatCaptureService : AccessibilityService() {
                 val sig = ocrSignature(pkg ?: "", snapshot.title, snapshot.bubbleRects)
                 if (sig == lastOcrSignature && overlay?.isShowing() == true) return
                 lastOcrSignature = sig
-                ocrCapture(snapshot.title, snapshot.bubbleRects, pkg ?: "", manual = false)
+                ocrCapture(snapshot, snapshot.bubbleRects, pkg ?: "", manual = false)
             }
             return
         }
@@ -437,10 +473,41 @@ open class ChatCaptureService : AccessibilityService() {
     private fun conversationKey(title: String?): String? =
         ConversationBindingKey.resolve(title, manualWindowTitle)
 
-    /** The contact bound to this conversation, or null when it is not bound yet. */
+    /**
+     * The contact bound to this conversation, or null when it is not bound yet.
+     *
+     * A readable title identifies the conversation by itself. When the title is
+     * unreadable (WeChat and other self-drawn windows) the confirmed name stands
+     * in for it — but that name only lived in memory, so after the service
+     * restarted the key could not be rebuilt and the user was asked to bind the
+     * same chat again forever. In that situation, if this app has exactly ONE
+     * binding, it is unambiguous and is reused. With two or more opaque bindings
+     * in the same app we cannot tell them apart and the user must confirm.
+     */
     private fun boundContact(title: String?, pkg: String): ConversationBinding? {
-        val key = conversationKey(title) ?: return null
-        return KbStore.get(this).binding(key, pkg)
+        val store = KbStore.get(this)
+        val key = conversationKey(title)
+        if (key != null) {
+            store.binding(key, pkg)?.let {
+                if (manualWindowTitle.isNullOrBlank()) manualWindowTitle = it.title
+                Log.i(TAG, "bind lookup pkg=$pkg keyLen=${key.length} hit=byKey")
+                return it
+            }
+        }
+        // Title unreadable: identify the conversation by the messages on screen.
+        val onScreen = currentSnapshot?.messages?.map { it.text }.orEmpty()
+        ConversationFingerprints.match(store.bindingsForApp(pkg), pkg, onScreen)?.let {
+            manualWindowTitle = it.title
+            Log.i(TAG, "bind lookup pkg=$pkg hit=byFingerprint")
+            return it
+        }
+        // Last resort: a single binding in this app is unambiguous.
+        val rows = store.bindings().filter { it.app == pkg }
+        val only = rows.singleOrNull()
+        if (only != null) manualWindowTitle = only.title
+        Log.i(TAG, "bind lookup pkg=$pkg titleLen=${title?.length ?: -1} " +
+            "keyLen=${key?.length ?: -1} appRows=${rows.size} fallbackHit=${only != null}")
+        return only
     }
 
     /**
@@ -527,7 +594,8 @@ open class ChatCaptureService : AccessibilityService() {
                 if (id == null && !store.saveContact(Contact(contactId, name, apps = listOf(pkg)))) {
                     overlay?.showError("对象档案保存失败"); return@done
                 }
-                if (!store.bind(ConversationBinding(pkg, identityTitle, contactId, remember))) {
+                val fingerprint = ConversationFingerprints.of(snapshot.messages.map { it.text })
+                if (!store.bind(ConversationBinding(pkg, identityTitle, contactId, remember, fingerprint))) {
                     overlay?.showError("绑定保存失败，未启用记忆"); return@done
                 }
                 if (remember) prefs.contextEnabled = true
@@ -554,6 +622,45 @@ open class ChatCaptureService : AccessibilityService() {
                 overlay?.resetForNewConversation(); idle()
             } },
             onCancel = { done { overlay?.resetForNewConversation(); idle() } })
+    }
+
+    /**
+     * Captures the current chat window and opens the title-region picker.
+     *
+     * The region is per chat app, so the screenshot is tagged with the package it
+     * came from; the picker stores it only for that package.
+     */
+    private fun startTitleCalibration() {
+        if (!session.current.isActive() || session.reviewPending) return
+        val root = rootInActiveWindow ?: return
+        val pkg = root.packageName?.toString().orEmpty()
+        if (pkg.isBlank() || pkg == packageName) {
+            overlay?.toast("请先进入微信或 QQ 的聊天窗口"); return
+        }
+        val token = session.current
+        val wasExpanded = true
+        overlay?.setHiddenForShot(true)
+        screenCapture.capture { res ->
+            if (!session.isCurrent(token)) {
+                if (res is ScreenCapture.Result.Ok) runCatching { res.bitmap.recycle() }
+                overlay?.setHiddenForShot(false)
+                return@capture
+            }
+            overlay?.setHiddenForShot(false)
+            when (res) {
+                is ScreenCapture.Result.Failed -> overlay?.showError(res.humanMessage)
+                is ScreenCapture.Result.Ok -> {
+                    com.jev.probe.calibrate.TitleCalibrationHandoff.put(res.bitmap, pkg)
+                    try {
+                        startActivity(Intent(this, com.jev.probe.calibrate.TitleCalibrationActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    } catch (_: Exception) {
+                        com.jev.probe.calibrate.TitleCalibrationHandoff.clear()
+                        overlay?.showError("无法打开标题区域设置")
+                    }
+                }
+            }
+        }
     }
 
     private fun startExternalCapture(import: Boolean) {
@@ -602,7 +709,7 @@ open class ChatCaptureService : AccessibilityService() {
                 // target for imported images (which may depict a different conversation).
                 waitingExternalBitmap = null // OCR callback now owns this bitmap.
                 ocr.scaleX = 1f; ocr.scaleY = 1f; ocr.originX = 0; ocr.originY = 0
-                val region = Rect(0, (bitmap.height * TOP_CROP).toInt(), bitmap.width, (bitmap.height * BOTTOM_CROP).toInt())
+                val region = screenToBitmapRegion(fresh, bitmap)
                 ocr.recognize(bitmap, region) { lines ->
                     bitmap.recycle()
                     if (!session.isCurrent(token)) return@recognize
@@ -727,9 +834,16 @@ open class ChatCaptureService : AccessibilityService() {
         val title = extracted?.title ?: root?.let {
             findTitleInActionBar(it, Int.MAX_VALUE, resources.displayMetrics.widthPixels, resources, 0.15, 0.85)
         }
+        // Remember a usable name BEFORE cancelWork(), which clears session state
+        // (including the confirmed name) and would otherwise make the identity
+        // check fail for a window whose own title is unreadable.
+        val remembered = manualWindowTitle
+            ?: title?.takeUnless { isTransientTitle(it) }
+            ?: boundContact(title, pkg)?.title
         cancelWork()
         activePkg = pkg
-        ocrCapture(title, emptyList(), pkg, manual = true)
+        manualWindowTitle = remembered
+        ocrCapture(currentSnapshot ?: extracted, emptyList(), pkg, manual = true)
     }
 
     /**
@@ -754,7 +868,8 @@ open class ChatCaptureService : AccessibilityService() {
      * where the bubbles are and who sent them, just not what they say) or OCR
      * the whole screen (everything else).
      */
-    private fun ocrCapture(treeTitle: String?, rects: List<BubbleRect>, pkg: String, manual: Boolean) {
+    private fun ocrCapture(snapshot: ChatSnapshot?, rects: List<BubbleRect>, pkg: String, manual: Boolean) {
+        val treeTitle = snapshot?.title
         val token = session.current
         if (ocrBusy || !token.isActive()) return
         ocrBusy = true
@@ -778,7 +893,7 @@ open class ChatCaptureService : AccessibilityService() {
                 }
                 is ScreenCapture.Result.Ok -> {
                     if (prefs.ocrEngine == Prefs.OCR_VISION) {
-                        ocrCloud(res.bitmap, treeTitle, pkg, manual, token)
+                        ocrCloud(res.bitmap, snapshot, pkg, manual, token)
                         return@capture
                     }
                     ocr.scaleX = res.scaleX; ocr.scaleY = res.scaleY
@@ -791,16 +906,18 @@ open class ChatCaptureService : AccessibilityService() {
                         // old rects only if the tree gives us nothing now.
                         val fresh = rootInActiveWindow?.let { collectFeishuBubbleRects(it, resources) }
                         ocrByRects(res.bitmap, if (fresh.isNullOrEmpty()) rects else fresh, treeTitle, pkg, token)
-                    } else ocrWholeScreen(res.bitmap, treeTitle, pkg, manual, token)
+                    } else ocrWholeScreen(res.bitmap, snapshot, pkg, manual, token)
                 }
             }
         }
     }
 
     /** One cropped image per round, rather than a paid request for every bubble. */
-    private fun ocrCloud(bmp: Bitmap, title: String?, pkg: String, manual: Boolean, token: WorkToken) {
-        val top = (bmp.height * TOP_CROP).toInt().coerceIn(0, bmp.height - 1)
-        val bottom = (bmp.height * BOTTOM_CROP).toInt().coerceIn(top + 1, bmp.height)
+    private fun ocrCloud(bmp: Bitmap, snapshot: ChatSnapshot?, pkg: String, manual: Boolean, token: WorkToken) {
+        val title = snapshot?.title
+        val bounds = screenToBitmapRegion(snapshot, bmp)
+        val top = bounds.top
+        val bottom = bounds.bottom
         val crop = Bitmap.createBitmap(bmp, 0, top, bmp.width, bottom - top)
         runCatching { bmp.recycle() }
         val detachCrop = token.onCancel { runCatching { crop.recycle() } }
@@ -862,14 +979,48 @@ open class ChatCaptureService : AccessibilityService() {
         }
     }
 
-    /** Whole screen minus the top bar and the input area, grouped by line gaps. */
-    private fun ocrWholeScreen(bmp: Bitmap, treeTitle: String?, pkg: String, manual: Boolean, token: WorkToken) {
-        val region = Rect(0, (bmp.height * TOP_CROP).toInt(), bmp.width, (bmp.height * BOTTOM_CROP).toInt())
-        ocr.recognize(bmp, region) { lines ->
-            runCatching { bmp.recycle() }
-            val msgs = groupOcrLines(lines)
-            val title = treeTitle?.takeIf { it.isNotBlank() } // Never use a message as the contact identity.
-            finishOcrSnapshot(ChatSnapshot(title, msgs, note = OCR_NOTE), pkg, manual, token)
+    /**
+     * The message area, grouped into pseudo-bubbles by line spacing.
+     *
+     * The crop comes from the adapter's reported viewport (first message to the
+     * input box) via [screenToBitmapRegion]; an unreadable edge stays uncropped.
+     * The conversation title is not in that region, so it is read separately from
+     * the title strip, which WeChat draws itself and never exposes to the tree.
+     */
+    private fun ocrWholeScreen(bmp: Bitmap, snapshot: ChatSnapshot?, pkg: String, manual: Boolean, token: WorkToken) {
+        ocrTitle(bmp, snapshot?.title, pkg) { title ->
+            val region = screenToBitmapRegion(snapshot, bmp)
+            ocr.recognize(bmp, region) { lines ->
+                runCatching { bmp.recycle() }
+                val msgs = groupOcrLines(lines)
+                finishOcrSnapshot(ChatSnapshot(title, msgs, note = OCR_NOTE), pkg, manual, token)
+            }
+        }
+    }
+
+    /**
+     * Reads the conversation name from the title strip.
+     *
+     * A title already read from the node tree always wins. Otherwise the strip is
+     * OCR'd on-device; when that yields nothing usable the tree title (possibly
+     * null) is kept, so an unreadable name is never invented.
+     */
+    private fun ocrTitle(bmp: Bitmap, treeTitle: String?, pkg: String, done: (String?) -> Unit) {
+        val tree = treeTitle?.takeIf { it.isNotBlank() }
+        if (tree != null) { done(tree); return }
+        // The title area is whatever the user selected for THIS app during
+        // calibration (WeChat and QQ differ). With no saved region we do not
+        // guess at a band: an invented crop could clip the name or read a message
+        // instead, which is exactly what went wrong before. Reading nothing is
+        // the honest outcome.
+        val region = TitleRegions.decode(prefs.titleRegions)[pkg]
+        val px = region?.pixelsFor(bmp.width, bmp.height)
+        if (px == null) { done(null); return }
+        val band = Rect(px[0], px[1], px[2], px[3])
+        ocr.recognize(bmp, band) { lines ->
+            val picked = ChatTitle.pick(lines.map { it.text to it.bounds.top })
+            Log.i(TAG, "ocr title region lines=${lines.size} picked=${picked != null}")
+            done(picked)
         }
     }
 
@@ -957,6 +1108,11 @@ open class ChatCaptureService : AccessibilityService() {
             return
         }
         if (!snapshotIsCurrent(snapshot, pkg)) {
+            val liveTitle = rootInActiveWindow?.packageName?.toString()
+            Log.w(TAG, "identity check failed pkg=$pkg livePkg=$liveTitle " +
+                "snapTitleLen=${snapshot.title?.length ?: -1} " +
+                "manualLen=${manualWindowTitle?.length ?: -1} " +
+                "bound=${boundContact(snapshot.title, pkg) != null}")
             overlay?.showError("无法确认当前聊天身份，请重新截屏并绑定对象"); return
         }
         updateBindingSummary(snapshot, pkg)
@@ -1027,6 +1183,11 @@ open class ChatCaptureService : AccessibilityService() {
     private fun fillInput(text: String, snapshot: ChatSnapshot, pkg: String) {
         val token = session.current
         submit(token) {
+            // The panel collapses as part of the tap, and focus returns to the
+            // chat app asynchronously. Reading the tree too early finds our own
+            // overlay (or the IME) and reports "input box not confirmed", so the
+            // draft is never written. Wait briefly for the chat window to return.
+            waitForChatWindow(pkg, token)
             val edit = verifiedInput(snapshot, pkg)
             val before = edit?.text?.toString()
             // Existing drafts belong to the user. Never clear or overwrite them.
@@ -1069,6 +1230,43 @@ open class ChatCaptureService : AccessibilityService() {
         }
     }
 
+    /** Blocks (on the worker) until the chat app is the active window, or times out. */
+    private fun waitForChatWindow(pkg: String, token: WorkToken) {
+        repeat(20) { attempt ->
+            token.checkActive()
+            val root = rootInActiveWindow
+            val live = root?.packageName?.toString()
+            if (live == pkg) {
+                // Let the window settle so the input box is attached.
+                Thread.sleep(80)
+                return
+            }
+            if (attempt < 19) Thread.sleep(50)
+        }
+    }
+
+    /**
+     * The screenshot region holding the messages, in bitmap coordinates.
+     *
+     * The adapter reports screen-space edges (first bubble, input box). A window
+     * screenshot is scaled and offset from the screen, so both are converted with
+     * the same scale/origin used when mapping OCR boxes back. Unknown edges stay
+     * uncropped: guessing with a percentage of the image is what previously cut
+     * real messages off on tall screens.
+     */
+    private fun screenToBitmapRegion(snapshot: ChatSnapshot?, bmp: Bitmap): Rect {
+        val sx = if (ocr.scaleX > 0f) ocr.scaleX else 1f
+        val sy = if (ocr.scaleY > 0f) ocr.scaleY else 1f
+        val topScreen = snapshot?.viewportTop
+        val bottomScreen = snapshot?.viewportBottom
+        val region = CaptureRegionCalculator.compute(
+            imageHeight = bmp.height,
+            firstBubbleTop = topScreen?.let { ((it - ocr.originY) * sy).toInt() },
+            composerTop = bottomScreen?.let { ((it - ocr.originY) * sy).toInt() })
+        return Rect(0, region.top.coerceIn(0, bmp.height - 1),
+            bmp.width, region.bottom.coerceIn(region.top + 1, bmp.height))
+    }
+
     private fun setTextRaw(edit: AccessibilityNodeInfo, text: String): Boolean {
         val args = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
@@ -1077,15 +1275,36 @@ open class ChatCaptureService : AccessibilityService() {
     }
 
     /** Never choose a search box or an editable field in another app. */
+    /**
+     * The chat input box, but only when the SAME conversation is still on screen.
+     *
+     * Identity is decided by the conversation key, not by an exact message
+     * signature: tapping 填入 collapses the panel and may coincide with a new
+     * message or a scroll, which legitimately changes the visible messages. An
+     * exact signature match therefore failed constantly and the draft was never
+     * written. The key (app + readable title, or the confirmed name for an
+     * unreadable window) is what actually proves we are in the right chat.
+     */
     private fun verifiedInput(snapshot: ChatSnapshot, pkg: String): AccessibilityNodeInfo? {
-        if (!snapshotIsCurrent(snapshot, pkg)) return null
         val root = rootInActiveWindow ?: return null
+        if (root.packageName?.toString() != pkg) return null
         val fresh = adapters[pkg]?.extract(root, resources) ?: return null
-        if (fresh.messages.isEmpty() || fresh.title != snapshot.title ||
-            fresh.signature() != snapshot.signature()) return null
+        if (fresh.isGroup) return null
+        val freshKey = conversationKey(fresh.title)
+        val wantKey = conversationKey(snapshot.title)
+        if (freshKey.isNullOrBlank() || freshKey != wantKey) return null
         return findEditable(root)
     }
 
+    /**
+     * The message input box, chosen as the lowest plausible editor on screen.
+     *
+     * A node counts when the platform marks it editable, or when it looks like a
+     * chat composer: an EditText / known WeChat input id that is visible,
+     * clickable or focusable, and sits in the lower part of the screen. The
+     * structural fallback matters because WeChat's composer is a self-drawn
+     * EditText whose `isEditable` is not always reported truthfully.
+     */
     private fun findEditable(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.addLast(root)
@@ -1097,8 +1316,18 @@ open class ChatCaptureService : AccessibilityService() {
         while (stack.isNotEmpty() && guard < 5000) {
             guard++
             val node = stack.removeLast()
-            if (node.isEditable && node.isVisibleToUser) {
-                node.getBoundsInScreen(bounds)
+            node.getBoundsInScreen(bounds)
+            val isComposer = ComposerShape.isComposer(
+                className = node.className?.toString(),
+                viewId = node.viewIdResourceName,
+                enabled = node.isEnabled,
+                visible = node.isVisibleToUser,
+                clickable = node.isClickable,
+                focusable = node.isFocusable,
+                editable = node.isEditable,
+                screenHeight = resources.displayMetrics.heightPixels,
+                centerY = bounds.centerY())
+            if (isComposer) {
                 if (bounds.width() >= 80 && bounds.height() >= 24 &&
                     bounds.centerY() >= minY && bounds.bottom > bestBottom) {
                     best = node
@@ -1109,6 +1338,7 @@ open class ChatCaptureService : AccessibilityService() {
         }
         return best
     }
+
 
     private fun copyToClipboard(text: String) {
         val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
@@ -1137,6 +1367,7 @@ open class ChatCaptureService : AccessibilityService() {
         overlay?.onProjectionCapture = null
         overlay?.onImportScreenshot = null
         overlay?.onShowHistory = null
+        overlay?.onCalibrateTitleRegion = null
         overlay?.onHidden = null
         overlay?.hide()
         overlay = null
@@ -1148,10 +1379,6 @@ open class ChatCaptureService : AccessibilityService() {
         private const val WECHAT_PACKAGE = "com.tencent.mm"
         private const val REVIEW_FOCUS_RETRIES = 20
         private const val REVIEW_FOCUS_RETRY_MS = 50L
-
-        /** Whole-screen OCR keeps the middle: no action bar, no input area. */
-        private const val TOP_CROP = 0.12f
-        private const val BOTTOM_CROP = 0.84f
 
         /** Said on the panel whenever a snapshot came from flat-screen OCR. */
         private const val OCR_NOTE = "OCR 未分边，把全部消息当作对方所说"

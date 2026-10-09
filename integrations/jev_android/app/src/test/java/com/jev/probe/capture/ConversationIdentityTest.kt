@@ -1,6 +1,7 @@
 package com.jev.probe.capture
 
-import org.junit.Assert.*
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConversationIdentityTest {
@@ -9,16 +10,19 @@ class ConversationIdentityTest {
         assertFalse(ConversationIdentity.matches("wechat", "A", "wechat", "B", false))
         assertFalse(ConversationIdentity.matches("wechat", "A", "qq", "A", false))
     }
+
     @Test fun opaqueWindowRequiresExplicitConfirmationForThisRound() {
         assertFalse(ConversationIdentity.matches("wechat", "A", "wechat", null, false))
         assertTrue(ConversationIdentity.matches("wechat", "A", "wechat", null, false, "A"))
         assertFalse(ConversationIdentity.matches("wechat", "A", "wechat", null, false, "B"))
     }
 
+    @Test fun groupOrBlankIdentityCannotBeAnalyzed() {
+        assertFalse(ConversationIdentity.matches("wechat", "A", "wechat", "A", true, "A"))
+        assertFalse(ConversationIdentity.matches("wechat", null, "wechat", null, false))
+    }
+
     @Test fun boundOpaqueWindowStaysValidForAnalysis() {
-        // Regression: after binding, the snapshot title is the confirmed name but
-        // the live title is still unreadable. This must stay valid, otherwise the
-        // analysis is dropped silently and the panel appears to hang.
         assertTrue(ConversationIdentity.matches("wechat", "小雨", "wechat", null, false, "小雨"))
         assertTrue(ConversationIdentity.matches("wechat", "小雨", "wechat", "", false, "小雨"))
         assertTrue(ConversationIdentity.matches("wechat", "小雨", "wechat", "   ", false, "小雨"))
@@ -29,11 +33,24 @@ class ConversationIdentityTest {
     }
 
     @Test fun readableDifferentTitleStillWinsOverTheConfirmedName() {
-        // A readable title is authoritative: another conversation cannot inherit it.
         assertFalse(ConversationIdentity.matches("wechat", "小雨", "wechat", "小美", false, "小雨"))
     }
-    @Test fun groupOrBlankIdentityCannotBeAnalyzed() {
-        assertFalse(ConversationIdentity.matches("wechat", "A", "wechat", "A", true, "A"))
-        assertFalse(ConversationIdentity.matches("wechat", null, "wechat", null, false))
+
+    @Test fun screenshotPathHasNoTitleAtAllAndMustStillMatch() {
+        // Regression: the OCR path builds a snapshot whose title is null because
+        // WeChat exposes none. Comparing it against the same window (also null)
+        // must succeed, using the confirmed name, or the analysis is refused.
+        assertTrue(ConversationIdentity.matches(
+            "com.tencent.mm", null, "com.tencent.mm", null, false, "星月九"))
+        assertTrue(ConversationIdentity.matches(
+            "com.tencent.mm", null, "com.tencent.mm", "星月九", false, "星月九"))
+        assertTrue(ConversationIdentity.matches(
+            "com.tencent.mm", "星月九", "com.tencent.mm", null, false, "星月九"))
+    }
+
+    @Test fun aConflictingReadableTitleStillBlocksTheWrongChat() {
+        // Even with a confirmed name, a readable title for another chat wins.
+        assertFalse(ConversationIdentity.matches(
+            "com.tencent.mm", null, "com.tencent.mm", "小美", false, "星月九"))
     }
 }

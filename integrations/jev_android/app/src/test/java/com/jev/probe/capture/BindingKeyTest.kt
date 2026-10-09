@@ -1,6 +1,7 @@
 package com.jev.probe.capture
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -41,6 +42,20 @@ class BindingKeyTest {
         repeat(3) {
             assertEquals(confirmed, ConversationBindingKey.resolve(null, "小雨"))
         }
+    }
+
+    @Test fun fillIdentityComparesByKeyNotByRawTitle() {
+        // The fill path must accept an unreadable live title on a bound window.
+        // Comparing raw titles made it always fail and silently fall back to copy.
+        val snapshotTitle = "小雨"           // what was confirmed and stored
+        val liveTitle: String? = null         // what WeChat actually reports
+        assertEquals(ConversationBindingKey.resolve(snapshotTitle, "小雨"),
+            ConversationBindingKey.resolve(liveTitle, "小雨"))
+    }
+
+    @Test fun fillIdentityRejectsADifferentConversation() {
+        assertFalse(ConversationBindingKey.resolve("小美", "小雨") ==
+            ConversationBindingKey.resolve(null, "小雨"))
     }
 
     @Test fun switchingToAReadableDifferentTitleDoesNotReuseTheOldName() {
